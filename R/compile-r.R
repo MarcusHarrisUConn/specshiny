@@ -3,8 +3,13 @@
 #' Compiles any schema- and statistically-validated `spec_ir` into a clean,
 #' readable, self-contained, and executable R simulation script using audited
 #' code templates. Never evaluates untrusted text or language-model strings;
-#' all identifiers and parameters pass [assert_valid_spec_ir()] and strict
-#' literal formatting before emission.
+#' all identifiers and parameters pass [assert_valid_spec_ir()] before emission,
+#' and every compiled script passes [verify_compiled_r_ast()] static AST
+#' verification before returning.
+#'
+#' Generated scripts use reproducible `L'Ecuyer-CMRG` random number generation,
+#' exact Cholesky draws for correlated predictors and correlated random effects,
+#' calibrated logistic MAR missingness, and zero `do.call()` or `eval()` calls.
 #'
 #' @param spec A validated `spec_ir` object.
 #' @param file Optional file path; when provided, writes the compiled R script
@@ -24,7 +29,7 @@
 #'   simulation = list(n_reps = 20L, seed = 42L)
 #' )
 #' code <- compile_r_script(spec)
-#' cat(substr(code, 1, 400))
+#' verify_compiled_r_ast(code)
 compile_r_script <- function(spec,
                              file = NULL,
                              include_header = TRUE,
@@ -36,22 +41,21 @@ compile_r_script <- function(spec,
   engine <- spec$estimator$engine
   family <- spec$outcome$family
   link <- spec$outcome$link
-  y_name <- spec$outcome$name
   focal <- spec$effects$focal_predictor %||% spec$predictors[[1L]]$name
 
   sections <- character()
 
-  # 1. Header comment (sanitized comments only)
+  # 1. Header comment (strictly sanitized single-line comments only)
   if (isTRUE(include_header)) {
     header_lines <- c(
       "# =============================================================================",
-      sprintf("# %s", sanitize_comment(spec$metadata$title)),
-      "# Generated deterministically by specshiny (zero eval/parse of untrusted text)",
-      sprintf("# IR Schema Version : %s", sanitize_comment(spec$schema_version)),
+      sprintf("# %s", sanitize_r_comment(spec$metadata$title)),
+      "# Generated deterministically by specshiny (AST-verified; zero eval/parse)",
+      sprintf("# IR Schema Version : %s", sanitize_r_comment(spec$schema_version)),
       sprintf("# Design Type       : %s (%d-level, %s / %s link)",
-              sanitize_comment(spec$design_type), levels_val, family, link),
-      sprintf("# Model Formula     : %s", sanitize_comment(math_info$formula)),
-      sprintf("# Estimator Engine  : %s", sanitize_comment(engine)),
+              sanitize_r_comment(spec$design_type), levels_val, family, link),
+      sprintf("# Model Formula     : %s", sanitize_r_comment(math_info$formula)),
+      sprintf("# Estimator Engine  : %s", sanitize_r_comment(engine)),
       "# ============================================================================="
     )
     sections <- c(sections, paste(header_lines, collapse = "\n"))
@@ -98,6 +102,9 @@ compile_r_script <- function(spec,
   script <- paste(sections, collapse = "\n\n")
   script <- paste0(script, "\n")
 
+  # Defense-in-depth post-compilation static AST safety gate
+  verify_compiled_r_ast(script, strict = TRUE)
+
   if (!is.null(file)) {
     writeLines(script, con = file, useBytes = TRUE)
     return(invisible(script))
@@ -108,12 +115,6 @@ compile_r_script <- function(spec,
 # ==============================================================================
 # Internal Deterministic Template Builders
 # ==============================================================================
-
-sanitize_comment <- function(x) {
-  x <- as.character(x %||% "")
-  x <- gsub("[\r\n\t]+", " ", x)
-  trimws(x)
-}
 
 fmt_num <- function(x) {
   if (!is_num_scalar(x)) {
@@ -147,7 +148,7 @@ build_cfg_block <- function(spec, focal) {
   lines <- c(
     "# --- 1. Simulation Configuration ---",
     "cfg <- list(",
-    sprintf("  title = %s,", deparse1(sanitize_comment(spec$metadata$title))),
+    sprintf("  title = %s,", deparse1(sanitize_r_comment(spec$metadata$title))),
     sprintf("  design_type = %s,", deparse1(spec$design_type)),
     sprintf("  levels = %s,", fmt_int(levels_val))
   )
@@ -178,6 +179,10 @@ build_cfg_block <- function(spec, focal) {
     sprintf("%s = %s", p$name, fmt_num(b))
   }, character(1))
   lines <- c(lines, sprintf("  fixed = list(%s),", paste(fixed_entries, collapse = ", ")))
+
+  if (!is.null(spec$predictor_corr) && is.matrix(spec$predictor_corr)) {
+    lines <- c(lines, sprintf("  predictor_corr = %s,", fmt_matrix(spec$predictor_corr)))
+  }
 
   if (levels_val == 2L) {
     if (!is.null(spec$effects$random$intercept_sd)) {
@@ -263,29 +268,79 @@ build_dgp_block <- function(spec) {
     )
   }
 
-  # Generate each predictor deterministically from closed distribution switch
-  for (p in spec$predictors) {
-    pname <- p$name
-    is_l2 <- (levels_val == 2L && identical(as.integer(p$level), 2L))
-    draw_n <- if (is_l2) "n_clusters" else "n"
-
-    draw_expr <- switch(
-      p$distribution,
-      normal = sprintf("stats::rnorm(%s, mean = %s, sd = %s)", draw_n, fmt_num(p$mean), fmt_num(p$sd)),
-      binary = sprintf("stats::rbinom(%s, size = 1L, prob = %s)", draw_n, fmt_num(p$prob)),
-      uniform = sprintf("stats::runif(%s, min = %s, max = %s)", draw_n, fmt_num(p$min), fmt_num(p$max))
-    )
-
-    if (is_l2) {
-      lines <- c(lines, sprintf("  dat$%s <- %s[cluster_idx]", pname, draw_expr))
-    } else {
-      lines <- c(lines, sprintf("  dat$%s <- %s", pname, draw_expr))
+  # Predictor generation: exact Cholesky draw when predictor_corr is specified
+  use_pcorr <- !is.null(spec$predictor_corr) && is.matrix(spec$predictor_corr)
+  if (use_pcorr) {
+    p_lvls <- vapply(spec$predictors, function(p) as.integer(p$level), integer(1))
+    emit_level_corr_preds <- function(lvl_idx, z_sym, draw_n, expand_cluster) {
+      k <- length(lvl_idx)
+      if (k == 0L) return(character())
+      idx_vec <- paste0("c(", paste(sprintf("%dL", lvl_idx), collapse = ", "), ")")
+      out <- character()
+      if (k == 1L) {
+        out <- c(out, sprintf("  %s <- matrix(stats::rnorm(%s), nrow = %s, ncol = 1L)", z_sym, draw_n, draw_n))
+      } else {
+        out <- c(
+          out,
+          sprintf("  R_%s <- params$predictor_corr[%s, %s, drop = FALSE]", z_sym, idx_vec, idx_vec),
+          sprintf("  %s <- matrix(stats::rnorm(%s * %dL), nrow = %s, ncol = %dL) %%*%% chol(R_%s)",
+                  z_sym, draw_n, k, draw_n, k, z_sym)
+        )
+      }
+      for (pos in seq_len(k)) {
+        p <- spec$predictors[[lvl_idx[[pos]]]]
+        z_col <- sprintf("%s[, %dL]", z_sym, pos)
+        raw_expr <- switch(
+          p$distribution,
+          normal = sprintf("%s + %s * %s", fmt_num(p$mean), fmt_num(p$sd), z_col),
+          binary = sprintf("as.integer(stats::pnorm(%s) < %s)", z_col, fmt_num(p$prob)),
+          uniform = sprintf("%s + (%s - %s) * stats::pnorm(%s)",
+                            fmt_num(p$min), fmt_num(p$max), fmt_num(p$min), z_col)
+        )
+        if (isTRUE(expand_cluster)) {
+          out <- c(out, sprintf("  dat$%s <- (%s)[cluster_idx]", p$name, raw_expr))
+        } else {
+          out <- c(out, sprintf("  dat$%s <- %s", p$name, raw_expr))
+        }
+        if (identical(p$centering, "grand_mean")) {
+          out <- c(out, sprintf("  dat$%s <- dat$%s - mean(dat$%s)", p$name, p$name, p$name))
+        } else if (identical(p$centering, "group_mean") && levels_val == 2L) {
+          out <- c(out, sprintf("  dat$%s <- dat$%s - stats::ave(dat$%s, dat$%s, FUN = mean)",
+                                p$name, p$name, p$name, cl_name))
+        }
+      }
+      out
     }
 
-    if (identical(p$centering, "grand_mean")) {
-      lines <- c(lines, sprintf("  dat$%s <- dat$%s - mean(dat$%s)", pname, pname, pname))
-    } else if (identical(p$centering, "group_mean") && levels_val == 2L) {
-      lines <- c(lines, sprintf("  dat$%s <- dat$%s - stats::ave(dat$%s, dat$%s, FUN = mean)", pname, pname, pname, cl_name))
+    lines <- c(
+      lines,
+      emit_level_corr_preds(which(p_lvls == 1L), "Z_l1", "n", FALSE),
+      if (levels_val == 2L) emit_level_corr_preds(which(p_lvls == 2L), "Z_l2", "n_clusters", TRUE) else character()
+    )
+  } else {
+    for (p in spec$predictors) {
+      pname <- p$name
+      is_l2 <- (levels_val == 2L && identical(as.integer(p$level), 2L))
+      draw_n <- if (is_l2) "n_clusters" else "n"
+
+      draw_expr <- switch(
+        p$distribution,
+        normal = sprintf("stats::rnorm(%s, mean = %s, sd = %s)", draw_n, fmt_num(p$mean), fmt_num(p$sd)),
+        binary = sprintf("stats::rbinom(%s, size = 1L, prob = %s)", draw_n, fmt_num(p$prob)),
+        uniform = sprintf("stats::runif(%s, min = %s, max = %s)", draw_n, fmt_num(p$min), fmt_num(p$max))
+      )
+
+      if (is_l2) {
+        lines <- c(lines, sprintf("  dat$%s <- %s[cluster_idx]", pname, draw_expr))
+      } else {
+        lines <- c(lines, sprintf("  dat$%s <- %s", pname, draw_expr))
+      }
+
+      if (identical(p$centering, "grand_mean")) {
+        lines <- c(lines, sprintf("  dat$%s <- dat$%s - mean(dat$%s)", pname, pname, pname))
+      } else if (identical(p$centering, "group_mean") && levels_val == 2L) {
+        lines <- c(lines, sprintf("  dat$%s <- dat$%s - stats::ave(dat$%s, dat$%s, FUN = mean)", pname, pname, pname, cl_name))
+      }
     }
   }
 
@@ -394,7 +449,7 @@ build_dgp_block <- function(spec) {
       "    gamma <- params$missing_strength",
       "    target_rate <- params$missing_rate",
       "    a0 <- tryCatch(",
-      "      stats::uniroot(function(a) mean(stats::plogis(a + gamma * aux_z)) - target_rate, interval = c(-20, 20))$root,",
+      "      stats::uniroot(function(a) mean(stats::plogis(a + gamma * aux_z)) - target_rate, interval = c(-25, 25))$root,",
       "      error = function(e) stats::qlogis(target_rate)",
       "    )",
       "    p_miss <- stats::plogis(a0 + gamma * aux_z)",
@@ -486,7 +541,7 @@ build_runner_block <- function(spec) {
   lines <- c(
     "# --- 4. Monte Carlo Simulation Runner ---",
     "run_simulation <- function(cfg) {",
-    "  set.seed(cfg$seed)",
+    "  set.seed(cfg$seed, kind = \"L'Ecuyer-CMRG\", normal.kind = \"Inversion\", sample.kind = \"Rejection\")",
     "  has_grid <- length(cfg$parameter_grid) > 0L",
     "  grid_df <- if (has_grid) {",
     "    expand.grid(cfg$parameter_grid, KEEP.OUT.ATTRS = FALSE, stringsAsFactors = FALSE)",
@@ -515,11 +570,11 @@ build_runner_block <- function(spec) {
     "      fit_and_extract(dat, cell_params)",
     "    })",
     "",
-    "    conv <- vapply(rep_res, `[[`, logical(1), \"converged\")",
-    "    ests <- vapply(rep_res, `[[`, numeric(1), \"est\")",
-    "    ses  <- vapply(rep_res, `[[`, numeric(1), \"se\")",
-    "    rejs <- vapply(rep_res, `[[`, logical(1), \"reject\")",
-    "    covs <- vapply(rep_res, `[[`, logical(1), \"covered\")",
+    "    conv <- vapply(rep_res, function(x) x$converged, logical(1))",
+    "    ests <- vapply(rep_res, function(x) x$est, numeric(1))",
+    "    ses  <- vapply(rep_res, function(x) x$se, numeric(1))",
+    "    rejs <- vapply(rep_res, function(x) x$reject, logical(1))",
+    "    covs <- vapply(rep_res, function(x) x$covered, logical(1))",
     "    true_beta <- cell_params$fixed[[cell_params$focal_predictor]]",
     "",
     "    ok <- which(conv)",
@@ -561,9 +616,18 @@ build_runner_block <- function(spec) {
     "    )",
     "  }",
     "",
+    "  summary_df <- summary_rows[[1L]]",
+    "  raw_df <- raw_rows[[1L]]",
+    "  if (length(summary_rows) > 1L) {",
+    "    for (k in 2L:length(summary_rows)) {",
+    "      summary_df <- rbind(summary_df, summary_rows[[k]])",
+    "      raw_df <- rbind(raw_df, raw_rows[[k]])",
+    "    }",
+    "  }",
+    "",
     "  list(",
-    "    summary = do.call(rbind, summary_rows),",
-    "    raw = do.call(rbind, raw_rows)",
+    "    summary = summary_df,",
+    "    raw = raw_df",
     "  )",
     "}"
   )

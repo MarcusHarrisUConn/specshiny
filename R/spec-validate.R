@@ -1,11 +1,3 @@
-# Reserved R keywords and internal compiler column names forbidden as user identifiers
-SPEC_RESERVED_WORDS <- c(
-  "if", "else", "repeat", "while", "function", "for", "in", "next", "break",
-  "TRUE", "FALSE", "NULL", "Inf", "NaN", "NA", "NA_integer_", "NA_real_",
-  "NA_complex_", "NA_character_", "T", "F", "c", "q", "t",
-  "cluster_id", "unit_id", "row_id", "eta", "mu", "prob_miss", "params", "cfg", "dat"
-)
-
 SPEC_ALLOWED_GRID_PARAMS <- c(
   "n_obs", "n_clusters", "cluster_size", "icc",
   "focal_effect", "residual_sd", "missing_rate"
@@ -13,14 +5,34 @@ SPEC_ALLOWED_GRID_PARAMS <- c(
 
 SPEC_MAX_GRID_CELLS <- 250L
 
+# Closed nested key allowlists (rejects unexpected LLM-injected properties)
+SPEC_ALLOWED_KEYS <- list(
+  top = c(
+    "schema_version", "metadata", "design_type", "hierarchy", "predictors",
+    "predictor_corr", "outcome", "effects", "missingness", "estimator",
+    "simulation", "defaults_rationale"
+  ),
+  metadata = c("title", "description", "source_prompt", "tags"),
+  hierarchy = c("levels", "n_obs", "n_clusters", "cluster_size", "cluster_name", "unit_name", "icc"),
+  predictor = c("name", "level", "distribution", "mean", "sd", "prob", "min", "max", "centering", "role"),
+  outcome = c("name", "family", "link", "residual_sd"),
+  effects = c("intercept", "fixed", "focal_predictor", "random"),
+  random = c("intercept", "intercept_sd", "slopes", "corr_matrix"),
+  slope = c("predictor", "sd"),
+  missingness = c("mechanism", "rate", "target", "auxiliary", "strength"),
+  estimator = c("engine", "reml", "conf_level", "missing_handling"),
+  simulation = c("n_reps", "seed", "alpha", "parameter_grid")
+)
+
 #' Validate a `spec_ir` object against schema and statistical sanity guardrails
 #'
 #' Performs pure-R structural schema validation (`category = "schema"`) and
 #' statistical sanity and identifiability checks (`category = "statistical"`),
-#' including positive variances and sample sizes, ICC bounds, random-slope
-#' identifiability, positive-definite random-effects correlation matrices via
-#' eigenvalue checks, missingness bounds, estimator-family compatibility, and
-#' parameter grid bounds.
+#' including strict ASCII identifier allowlists, closed nested object keys
+#' (rejecting unknown extra fields from LLM JSON), positive variances and sample
+#' sizes, ICC bounds, random-slope identifiability, positive-definite predictor
+#' and random-effects correlation matrices via eigenvalue checks, missingness
+#' bounds, estimator-family compatibility, and parameter grid bounds.
 #'
 #' @param spec A `spec_ir` object (or list) to validate.
 #' @param strict Logical; if `TRUE`, aborts with a formatted `cli` error when
@@ -54,6 +66,61 @@ validate_spec_ir <- function(spec, strict = FALSE) {
       category = category,
       message = message
     )
+  }
+
+  check_extra_keys <- function(obj, allowed, path_prefix) {
+    if (!is.list(obj)) return(invisible(NULL))
+    nms <- names(obj) %||% character()
+    extras <- setdiff(nms, allowed)
+    for (ek in extras) {
+      add_err(
+        paste0(path_prefix, ".", ek),
+        "unknown_nested_field",
+        "schema",
+        sprintf("Unknown field '%s' inside '%s' is not permitted by IR schema v%s.", ek, path_prefix, SPEC_SCHEMA_VERSION)
+      )
+    }
+  }
+
+  check_corr_matrix <- function(cm, expected_dim, path_name) {
+    if (!is.matrix(cm) || !is.numeric(cm)) {
+      add_err(path_name, "invalid_corr_matrix_type", "schema",
+              sprintf("%s must be a numeric matrix.", path_name))
+      return(FALSE)
+    }
+    if (nrow(cm) != expected_dim || ncol(cm) != expected_dim) {
+      add_err(path_name, "corr_matrix_dim_mismatch", "statistical",
+              sprintf("%s must be %dx%d (got %dx%d).", path_name, expected_dim, expected_dim, nrow(cm), ncol(cm)))
+      return(FALSE)
+    }
+    if (any(!is.finite(cm))) {
+      add_err(path_name, "corr_matrix_non_finite", "statistical",
+              sprintf("%s contains non-finite values.", path_name))
+      return(FALSE)
+    }
+    ok <- TRUE
+    if (max(abs(cm - t(cm))) > 1e-8) {
+      add_err(path_name, "corr_matrix_not_symmetric", "statistical",
+              sprintf("%s must be symmetric.", path_name))
+      ok <- FALSE
+    }
+    if (max(abs(diag(cm) - 1)) > 1e-8) {
+      add_err(path_name, "corr_matrix_unit_diagonal", "statistical",
+              sprintf("%s must have all diagonal entries equal to 1.", path_name))
+      ok <- FALSE
+    }
+    if (any(cm < -1 - 1e-8 | cm > 1 + 1e-8)) {
+      add_err(path_name, "corr_matrix_out_of_bounds", "statistical",
+              sprintf("%s entries must lie in [-1, 1].", path_name))
+      ok <- FALSE
+    }
+    eig_vals <- eigen(0.5 * (cm + t(cm)), symmetric = TRUE, only.values = TRUE)$values
+    if (min(eig_vals) <= 1e-8) {
+      add_err(path_name, "corr_matrix_not_positive_definite", "statistical",
+              sprintf("%s is not positive definite (minimum eigenvalue = %.6g).", path_name, min(eig_vals)))
+      ok <- FALSE
+    }
+    ok
   }
 
   build_report <- function() {
@@ -106,9 +173,10 @@ validate_spec_ir <- function(spec, strict = FALSE) {
   for (k in missing_top) {
     add_err(k, "missing_required_field", "schema", sprintf("Missing required top-level field '%s'.", k))
   }
-  extra_top <- setdiff(names(spec), required_top)
+  extra_top <- setdiff(names(spec), SPEC_ALLOWED_KEYS$top)
   for (k in extra_top) {
-    add_err(k, "unknown_top_level_field", "schema", sprintf("Unknown top-level field '%s' is not part of IR schema v%s.", k, SPEC_SCHEMA_VERSION))
+    add_err(k, "unknown_top_level_field", "schema",
+            sprintf("Unknown top-level field '%s' is not part of IR schema v%s.", k, SPEC_SCHEMA_VERSION))
   }
 
   if (length(missing_top) > 0L) {
@@ -124,14 +192,15 @@ validate_spec_ir <- function(spec, strict = FALSE) {
   if (!is.list(spec$metadata)) {
     add_err("metadata", "invalid_type", "schema", "metadata must be a named list.")
   } else {
-    if (!is_chr_scalar(spec$metadata$title) || !nzchar(trimws(spec$metadata$title))) {
-      add_err("metadata.title", "invalid_title", "schema", "metadata$title must be a non-empty character scalar.")
+    check_extra_keys(spec$metadata, SPEC_ALLOWED_KEYS$metadata, "metadata")
+    if (!is_chr_scalar(spec$metadata$title) || !nzchar(trimws(spec$metadata$title)) || nchar(spec$metadata$title) > 300L) {
+      add_err("metadata.title", "invalid_title", "schema", "metadata$title must be a non-empty character scalar (<= 300 chars).")
     }
-    if (!is_chr_scalar(spec$metadata$description)) {
-      add_err("metadata.description", "invalid_description", "schema", "metadata$description must be a character scalar.")
+    if (!is_chr_scalar(spec$metadata$description) || nchar(spec$metadata$description) > 2000L) {
+      add_err("metadata.description", "invalid_description", "schema", "metadata$description must be a character scalar (<= 2000 chars).")
     }
-    if (!is.null(spec$metadata$source_prompt) && !is_chr_scalar(spec$metadata$source_prompt)) {
-      add_err("metadata.source_prompt", "invalid_source_prompt", "schema", "metadata$source_prompt must be NULL or a character scalar.")
+    if (!is.null(spec$metadata$source_prompt) && (!is_chr_scalar(spec$metadata$source_prompt) || nchar(spec$metadata$source_prompt) > 2000L)) {
+      add_err("metadata.source_prompt", "invalid_source_prompt", "schema", "metadata$source_prompt must be NULL or a character scalar (<= 2000 chars).")
     }
     if (!is.null(spec$metadata$tags) && !is.character(spec$metadata$tags)) {
       add_err("metadata.tags", "invalid_tags", "schema", "metadata$tags must be a character vector.")
@@ -159,6 +228,7 @@ validate_spec_ir <- function(spec, strict = FALSE) {
     add_err("hierarchy", "invalid_type", "schema", "hierarchy must be a named list.")
   } else {
     h <- spec$hierarchy
+    check_extra_keys(h, SPEC_ALLOWED_KEYS$hierarchy, "hierarchy")
     if (!is_whole_scalar(h$levels) || !(as.integer(h$levels) %in% c(1L, 2L))) {
       add_err("hierarchy.levels", "invalid_levels", "schema", "hierarchy$levels must be integer 1 or 2.")
     } else {
@@ -167,7 +237,7 @@ validate_spec_ir <- function(spec, strict = FALSE) {
 
     if (!is_valid_r_ident(h$unit_name)) {
       add_err("hierarchy.unit_name", "invalid_identifier", "schema",
-              "hierarchy$unit_name must be a valid non-reserved R identifier.")
+              "hierarchy$unit_name must be a valid pure-ASCII non-reserved R identifier (<= 64 chars).")
     } else {
       unit_name_val <- h$unit_name
     }
@@ -207,7 +277,7 @@ validate_spec_ir <- function(spec, strict = FALSE) {
       }
       if (!is_valid_r_ident(h$cluster_name)) {
         add_err("hierarchy.cluster_name", "invalid_identifier", "schema",
-                "2-level design requires hierarchy$cluster_name to be a valid non-reserved R identifier.")
+                "2-level design requires hierarchy$cluster_name to be a valid pure-ASCII non-reserved R identifier.")
       } else {
         cluster_name_val <- h$cluster_name
       }
@@ -234,9 +304,10 @@ validate_spec_ir <- function(spec, strict = FALSE) {
         add_err(p_path, "invalid_predictor", "schema", "Each predictor must be a named list.")
         next
       }
+      check_extra_keys(p, SPEC_ALLOWED_KEYS$predictor, p_path)
       if (!is_valid_r_ident(p$name)) {
         add_err(paste0(p_path, ".name"), "invalid_identifier", "schema",
-                sprintf("Predictor name '%s' is not a valid non-reserved R identifier.", as.character(p$name %||% "")))
+                sprintf("Predictor name '%s' is not a valid pure-ASCII non-reserved R identifier.", as.character(p$name %||% "")))
       } else {
         pred_names <- c(pred_names, p$name)
       }
@@ -306,6 +377,25 @@ validate_spec_ir <- function(spec, strict = FALSE) {
   }
   pred_level_map <- stats::setNames(pred_levels[seq_along(pred_names)], pred_names)
 
+  # 5b. Optional Predictor Correlation Matrix (strict PD + same-level guardrail)
+  if (!is.null(spec$predictor_corr)) {
+    p_len <- length(spec$predictors)
+    pcm <- spec$predictor_corr
+    if (check_corr_matrix(pcm, p_len, "predictor_corr") && length(pred_levels) == p_len && !any(is.na(pred_levels))) {
+      for (i in seq_len(p_len)) {
+        for (j in seq_len(p_len)) {
+          if (i < j && pred_levels[[i]] != pred_levels[[j]] && abs(pcm[i, j]) > 1e-8) {
+            add_err(
+              "predictor_corr", "cross_level_predictor_corr", "statistical",
+              sprintf("predictor_corr[%d,%d] cannot specify non-zero correlation between level-%d and level-%d predictors.",
+                      i, j, pred_levels[[i]], pred_levels[[j]])
+            )
+          }
+        }
+      }
+    }
+  }
+
   # 6. Outcome
   out_family <- NA_character_
   out_name <- NULL
@@ -313,9 +403,10 @@ validate_spec_ir <- function(spec, strict = FALSE) {
     add_err("outcome", "invalid_type", "schema", "outcome must be a named list.")
   } else {
     o <- spec$outcome
+    check_extra_keys(o, SPEC_ALLOWED_KEYS$outcome, "outcome")
     if (!is_valid_r_ident(o$name)) {
       add_err("outcome.name", "invalid_identifier", "schema",
-              "outcome$name must be a valid non-reserved R identifier.")
+              "outcome$name must be a valid pure-ASCII non-reserved R identifier.")
     } else {
       out_name <- o$name
       if (out_name %in% pred_names) {
@@ -364,6 +455,7 @@ validate_spec_ir <- function(spec, strict = FALSE) {
     add_err("effects", "invalid_type", "schema", "effects must be a named list.")
   } else {
     ef <- spec$effects
+    check_extra_keys(ef, SPEC_ALLOWED_KEYS$effects, "effects")
     if (!is_num_scalar(ef$intercept)) {
       add_err("effects.intercept", "invalid_intercept", "schema", "effects$intercept must be a finite numeric scalar.")
     }
@@ -400,6 +492,7 @@ validate_spec_ir <- function(spec, strict = FALSE) {
       add_err("effects.random", "invalid_random_effects", "schema", "effects$random must be a named list.")
     } else {
       r <- ef$random
+      check_extra_keys(r, SPEC_ALLOWED_KEYS$random, "effects.random")
       if (!is_lgl_scalar(r$intercept)) {
         add_err("effects.random.intercept", "invalid_random_intercept", "schema",
                 "effects$random$intercept must be TRUE or FALSE.")
@@ -452,6 +545,7 @@ validate_spec_ir <- function(spec, strict = FALSE) {
               add_err(s_path, "invalid_slope_entry", "schema", "Each random slope must be a list with 'predictor' and 'sd'.")
               next
             }
+            check_extra_keys(sl, SPEC_ALLOWED_KEYS$slope, s_path)
             if (!is_chr_scalar(sl$predictor) || !(sl$predictor %in% pred_names)) {
               add_err(paste0(s_path, ".predictor"), "unknown_slope_predictor", "schema",
                       sprintf("Random slope predictor '%s' does not exist in predictors.", as.character(sl$predictor %||% "")))
@@ -475,7 +569,6 @@ validate_spec_ir <- function(spec, strict = FALSE) {
 
         q_rand <- as.integer(isTRUE(r$intercept)) + (if (is.list(slopes)) length(slopes) else 0L)
 
-        # Identifiability check: cluster_size > q_rand and n_clusters > q_rand
         if (q_rand > 0L) {
           if (!is.na(cluster_size_val) && cluster_size_val <= q_rand) {
             add_err("hierarchy.cluster_size", "insufficient_cluster_size_for_random_effects", "statistical",
@@ -493,41 +586,8 @@ validate_spec_ir <- function(spec, strict = FALSE) {
           }
         }
 
-        # Correlation matrix validation (symmetry, unit diagonal, strict PD via eigenvalues)
         if (!is.null(r$corr_matrix)) {
-          cm <- r$corr_matrix
-          if (q_rand <= 1L && !(is.matrix(cm) && nrow(cm) == q_rand && ncol(cm) == q_rand)) {
-            add_err("effects.random.corr_matrix", "corr_matrix_dim_mismatch", "statistical",
-                    sprintf("corr_matrix must match %d random effect(s) (or be NULL when q <= 1).", q_rand))
-          } else if (!is.matrix(cm) || !is.numeric(cm)) {
-            add_err("effects.random.corr_matrix", "invalid_corr_matrix_type", "schema",
-                    "effects$random$corr_matrix must be a numeric matrix.")
-          } else if (nrow(cm) != q_rand || ncol(cm) != q_rand) {
-            add_err("effects.random.corr_matrix", "corr_matrix_dim_mismatch", "statistical",
-                    sprintf("effects$random$corr_matrix must be %dx%d to match %d random effect(s) (got %dx%d).",
-                            q_rand, q_rand, q_rand, nrow(cm), ncol(cm)))
-          } else if (any(!is.finite(cm))) {
-            add_err("effects.random.corr_matrix", "corr_matrix_non_finite", "statistical",
-                    "effects$random$corr_matrix contains non-finite values.")
-          } else {
-            if (max(abs(cm - t(cm))) > 1e-8) {
-              add_err("effects.random.corr_matrix", "corr_matrix_not_symmetric", "statistical",
-                      "effects$random$corr_matrix must be symmetric.")
-            }
-            if (max(abs(diag(cm) - 1)) > 1e-8) {
-              add_err("effects.random.corr_matrix", "corr_matrix_unit_diagonal", "statistical",
-                      "effects$random$corr_matrix must have all diagonal entries equal to 1.")
-            }
-            if (any(cm < -1 - 1e-8 | cm > 1 + 1e-8)) {
-              add_err("effects.random.corr_matrix", "corr_matrix_out_of_bounds", "statistical",
-                      "effects$random$corr_matrix entries must lie in [-1, 1].")
-            }
-            eig_vals <- eigen(0.5 * (cm + t(cm)), symmetric = TRUE, only.values = TRUE)$values
-            if (min(eig_vals) <= 1e-8) {
-              add_err("effects.random.corr_matrix", "corr_matrix_not_positive_definite", "statistical",
-                      sprintf("effects$random$corr_matrix is not positive definite (minimum eigenvalue = %.6g).", min(eig_vals)))
-            }
-          }
+          check_corr_matrix(r$corr_matrix, q_rand, "effects.random.corr_matrix")
         }
       }
     }
@@ -539,6 +599,7 @@ validate_spec_ir <- function(spec, strict = FALSE) {
     add_err("missingness", "invalid_type", "schema", "missingness must be a named list.")
   } else {
     m <- spec$missingness
+    check_extra_keys(m, SPEC_ALLOWED_KEYS$missingness, "missingness")
     if (!is_chr_scalar(m$mechanism) || !(m$mechanism %in% c("none", "MCAR", "MAR"))) {
       add_err("missingness.mechanism", "invalid_missing_mechanism", "schema",
               "missingness$mechanism must be 'none', 'MCAR', or 'MAR'.")
@@ -582,6 +643,7 @@ validate_spec_ir <- function(spec, strict = FALSE) {
     add_err("estimator", "invalid_type", "schema", "estimator must be a named list.")
   } else {
     est <- spec$estimator
+    check_extra_keys(est, SPEC_ALLOWED_KEYS$estimator, "estimator")
     if (!is_chr_scalar(est$engine) || !(est$engine %in% c("lm", "glm", "lmer", "glmer"))) {
       add_err("estimator.engine", "invalid_estimator_engine", "schema",
               "estimator$engine must be one of 'lm', 'glm', 'lmer', or 'glmer'.")
@@ -622,6 +684,7 @@ validate_spec_ir <- function(spec, strict = FALSE) {
     add_err("simulation", "invalid_type", "schema", "simulation must be a named list.")
   } else {
     sim <- spec$simulation
+    check_extra_keys(sim, SPEC_ALLOWED_KEYS$simulation, "simulation")
     if (!is_whole_scalar(sim$n_reps) || as.integer(sim$n_reps) < 1L || as.integer(sim$n_reps) > 100000L) {
       add_err("simulation.n_reps", "invalid_n_reps", "statistical",
               "simulation$n_reps must be an integer in [1, 100000].")
@@ -662,7 +725,6 @@ validate_spec_ir <- function(spec, strict = FALSE) {
           }
           cell_prod <- cell_prod * length(vals)
 
-          # Applicability & domain checks
           if (gn == "n_obs") {
             if (!identical(levels_val, 1L)) {
               add_err(gpath, "grid_param_inapplicable", "statistical", "Grid parameter 'n_obs' applies only to 1-level designs.")
@@ -718,7 +780,7 @@ validate_spec_ir <- function(spec, strict = FALSE) {
     }
   }
 
-  # 11. Defaults rationale
+  # 11. Defaults rationale (strict ASCII path keys & bounded string values)
   if (!is.list(spec$defaults_rationale)) {
     add_err("defaults_rationale", "invalid_rationale", "schema", "defaults_rationale must be a named list of character scalars.")
   } else if (length(spec$defaults_rationale) > 0L) {
@@ -726,9 +788,16 @@ validate_spec_ir <- function(spec, strict = FALSE) {
     if (any(!nzchar(rnames))) {
       add_err("defaults_rationale", "unnamed_rationale", "schema", "All entries in defaults_rationale must be named.")
     }
-    bad_vals <- !vapply(spec$defaults_rationale, is_chr_scalar, logical(1))
-    if (any(bad_vals)) {
-      add_err("defaults_rationale", "non_string_rationale", "schema", "All entries in defaults_rationale must be character scalars.")
+    for (rn in rnames) {
+      if (nzchar(rn) && !is_valid_rationale_key(rn)) {
+        add_err(paste0("defaults_rationale.", rn), "invalid_rationale_key", "schema",
+                sprintf("defaults_rationale key '%s' must be a pure-ASCII dotted IR path.", rn))
+      }
+      rv <- spec$defaults_rationale[[rn]]
+      if (!is_chr_scalar(rv) || nchar(rv) > 1000L) {
+        add_err(paste0("defaults_rationale.", rn), "non_string_rationale", "schema",
+                "All entries in defaults_rationale must be character scalars (<= 1000 chars).")
+      }
     }
   }
 
@@ -786,7 +855,7 @@ print.spec_validation <- function(x, ...) {
   invisible(x)
 }
 
-# Scalar / identifier predicates
+# Scalar predicates
 is_chr_scalar <- function(x) {
   is.character(x) && length(x) == 1L && !is.na(x)
 }
@@ -801,12 +870,4 @@ is_whole_scalar <- function(x) {
 
 is_lgl_scalar <- function(x) {
   is.logical(x) && length(x) == 1L && !is.na(x)
-}
-
-is_valid_r_ident <- function(x) {
-  is_chr_scalar(x) &&
-    nchar(x) >= 1L &&
-    nchar(x) <= 64L &&
-    grepl("^[A-Za-z][A-Za-z0-9_]*$", x) &&
-    !(x %in% SPEC_RESERVED_WORDS)
 }

@@ -43,6 +43,7 @@ mod_spec_controls_server <- function(id, spec_rv, last_diff_rv = NULL) {
     guardrail_error_rv <- shiny::reactiveVal(NULL)
     structure_key_rv <- shiny::reactiveVal("")
     render_tick_rv <- shiny::reactiveVal(0L)
+    last_seen_spec_rv <- shiny::reactiveVal(shiny::isolate(spec_rv()))
     registered_ids <- new.env(parent = emptyenv())
 
     descriptor_r <- shiny::reactive({
@@ -71,6 +72,10 @@ mod_spec_controls_server <- function(id, spec_rv, last_diff_rv = NULL) {
         res <- patch_spec_from_control(cur, cid, val)
         if (!res$changed) {
           # Idempotent fixed point: breaks IR -> UI -> IR echo loops automatically
+          # Also clear any stale guardrail error once input matches valid state
+          if (res$validation$valid) {
+            guardrail_error_rv(NULL)
+          }
           return()
         }
 
@@ -97,6 +102,11 @@ mod_spec_controls_server <- function(id, spec_rv, last_diff_rv = NULL) {
     shiny::observeEvent(spec_rv(), {
       sp <- spec_rv()
       if (is.null(sp)) return()
+      prev_sp <- shiny::isolate(last_seen_spec_rv())
+      if (!is.null(prev_sp) && diff_spec_ir(prev_sp, sp)$has_changes) {
+        guardrail_error_rv(NULL)
+      }
+      last_seen_spec_rv(sp)
       desc <- spec_to_controls(sp)
 
       # Ensure every active control has an input observer wired

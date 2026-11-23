@@ -23,10 +23,11 @@ An S3 object of class \code{spec_validation} with elements:
 \description{
 Performs pure-R structural schema validation (\code{category = "schema"}) and
 statistical sanity and identifiability checks (\code{category = "statistical"}),
-including positive variances and sample sizes, ICC bounds, random-slope
-identifiability, positive-definite random-effects correlation matrices via
-eigenvalue checks, missingness bounds, estimator-family compatibility, and
-parameter grid bounds.
+including strict ASCII identifier allowlists, closed nested object keys
+(rejecting unknown extra fields from LLM JSON), positive variances and sample
+sizes, ICC bounds, random-slope identifiability, positive-definite predictor
+and random-effects correlation matrices via eigenvalue checks, missingness
+bounds, estimator-family compatibility, and parameter grid bounds.
 }
 \examples{
 spec <- new_spec_ir()

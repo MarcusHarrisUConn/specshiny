@@ -8,7 +8,8 @@ translator_ollama(
   model = "llama3.1",
   base_url = "http://localhost:11434",
   temperature = 0,
-  timeout = 120
+  timeout = 120,
+  max_response_bytes = 524288L
 )
 }
 \arguments{
@@ -18,15 +19,19 @@ translator_ollama(
 
 \item{temperature}{Numeric sampling temperature (defaults to \code{0}).}
 
-\item{timeout}{Numeric HTTP timeout in seconds.}
+\item{timeout}{Numeric HTTP timeout in seconds (\code{1} to \code{600}).}
+
+\item{max_response_bytes}{Maximum permitted HTTP response size in bytes
+(defaults to \code{524288L}, i.e., 512 KB).}
 }
 \value{
 An S3 object of class \code{c("spec_translator_ollama", "spec_translator")}.
 }
 \description{
 Configures an \code{httr2}-based translator targeting a local Ollama \verb{/api/chat}
-server with JSON-only output formatting. Returned JSON is parsed strictly
-via \code{jsonlite::fromJSON()} and validated by \code{\link[=validate_spec_ir]{validate_spec_ir()}}.
+server with JSON-only output formatting, URL validation (HTTPS or local
+loopback HTTP only), bounded timeouts and response sizes, and strict
+validation via \code{\link[=validate_spec_ir]{validate_spec_ir()}}.
 }
 \examples{
 tr <- translator_ollama(model = "llama3.1")

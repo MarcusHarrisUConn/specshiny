@@ -25,13 +25,14 @@
     "metadata": {
       "type": "object",
       "required": ["title", "description"],
+      "additionalProperties": false,
       "properties": {
-        "title": { "type": "string", "minLength": 1 },
-        "description": { "type": "string" },
-        "source_prompt": { "type": ["string", "null"] },
+        "title": { "type": "string", "minLength": 1, "maxLength": 300 },
+        "description": { "type": "string", "maxLength": 2000 },
+        "source_prompt": { "type": ["string", "null"], "maxLength": 2000 },
         "tags": {
           "type": "array",
-          "items": { "type": "string" }
+          "items": { "type": "string", "maxLength": 64 }
         }
       }
     },
@@ -42,13 +43,14 @@
     "hierarchy": {
       "type": "object",
       "required": ["levels", "unit_name"],
+      "additionalProperties": false,
       "properties": {
         "levels": { "type": "integer", "enum": [1, 2] },
         "n_obs": { "type": ["integer", "null"], "minimum": 5 },
         "n_clusters": { "type": ["integer", "null"], "minimum": 3 },
         "cluster_size": { "type": ["integer", "null"], "minimum": 2 },
-        "cluster_name": { "type": ["string", "null"], "pattern": "^[A-Za-z][A-Za-z0-9_]*$" },
-        "unit_name": { "type": "string", "pattern": "^[A-Za-z][A-Za-z0-9_]*$" },
+        "cluster_name": { "type": ["string", "null"], "pattern": "^[A-Za-z][A-Za-z0-9_]*$", "maxLength": 64 },
+        "unit_name": { "type": "string", "pattern": "^[A-Za-z][A-Za-z0-9_]*$", "maxLength": 64 },
         "icc": { "type": ["number", "null"], "minimum": 0, "exclusiveMaximum": 1 }
       }
     },
@@ -58,8 +60,9 @@
       "items": {
         "type": "object",
         "required": ["name", "level", "distribution", "centering"],
+        "additionalProperties": false,
         "properties": {
-          "name": { "type": "string", "pattern": "^[A-Za-z][A-Za-z0-9_]*$" },
+          "name": { "type": "string", "pattern": "^[A-Za-z][A-Za-z0-9_]*$", "maxLength": 64 },
           "level": { "type": "integer", "enum": [1, 2] },
           "distribution": { "type": "string", "enum": ["normal", "binary", "uniform"] },
           "mean": { "type": ["number", "null"] },
@@ -72,11 +75,19 @@
         }
       }
     },
+    "predictor_corr": {
+      "type": ["array", "null"],
+      "items": {
+        "type": "array",
+        "items": { "type": "number", "minimum": -1, "maximum": 1 }
+      }
+    },
     "outcome": {
       "type": "object",
       "required": ["name", "family", "link"],
+      "additionalProperties": false,
       "properties": {
-        "name": { "type": "string", "pattern": "^[A-Za-z][A-Za-z0-9_]*$" },
+        "name": { "type": "string", "pattern": "^[A-Za-z][A-Za-z0-9_]*$", "maxLength": 64 },
         "family": { "type": "string", "enum": ["gaussian", "binomial", "poisson"] },
         "link": { "type": "string", "enum": ["identity", "logit", "probit", "log"] },
         "residual_sd": { "type": ["number", "null"], "exclusiveMinimum": 0 }
@@ -85,6 +96,7 @@
     "effects": {
       "type": "object",
       "required": ["intercept", "fixed", "focal_predictor", "random"],
+      "additionalProperties": false,
       "properties": {
         "intercept": { "type": "number" },
         "fixed": {
@@ -95,6 +107,7 @@
         "random": {
           "type": "object",
           "required": ["intercept", "slopes"],
+          "additionalProperties": false,
           "properties": {
             "intercept": { "type": "boolean" },
             "intercept_sd": { "type": ["number", "null"], "minimum": 0 },
@@ -103,8 +116,9 @@
               "items": {
                 "type": "object",
                 "required": ["predictor", "sd"],
+                "additionalProperties": false,
                 "properties": {
-                  "predictor": { "type": "string", "pattern": "^[A-Za-z][A-Za-z0-9_]*$" },
+                  "predictor": { "type": "string", "pattern": "^[A-Za-z][A-Za-z0-9_]*$", "maxLength": 64 },
                   "sd": { "type": "number", "exclusiveMinimum": 0 }
                 }
               }
@@ -123,10 +137,11 @@
     "missingness": {
       "type": "object",
       "required": ["mechanism", "rate", "target"],
+      "additionalProperties": false,
       "properties": {
         "mechanism": { "type": "string", "enum": ["none", "MCAR", "MAR"] },
         "rate": { "type": "number", "minimum": 0, "exclusiveMaximum": 0.95 },
-        "target": { "type": "string" },
+        "target": { "type": "string", "const": "outcome" },
         "auxiliary": { "type": ["string", "null"] },
         "strength": { "type": ["number", "null"] }
       }
@@ -134,6 +149,7 @@
     "estimator": {
       "type": "object",
       "required": ["engine", "reml", "conf_level", "missing_handling"],
+      "additionalProperties": false,
       "properties": {
         "engine": { "type": "string", "enum": ["lm", "glm", "lmer", "glmer"] },
         "reml": { "type": "boolean" },
@@ -144,6 +160,7 @@
     "simulation": {
       "type": "object",
       "required": ["n_reps", "seed", "alpha", "parameter_grid"],
+      "additionalProperties": false,
       "properties": {
         "n_reps": { "type": "integer", "minimum": 1, "maximum": 100000 },
         "seed": { "type": "integer" },
@@ -161,7 +178,7 @@
     },
     "defaults_rationale": {
       "type": "object",
-      "additionalProperties": { "type": "string" }
+      "additionalProperties": { "type": "string", "maxLength": 1000 }
     }
   }
 }

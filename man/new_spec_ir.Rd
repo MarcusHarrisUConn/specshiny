@@ -12,6 +12,7 @@ new_spec_ir(
   tags = character(),
   hierarchy = list(),
   predictors = NULL,
+  predictor_corr = NULL,
   outcome = list(),
   effects = list(),
   missingness = list(),
@@ -37,6 +38,10 @@ new_spec_ir(
 \code{n_clusters}, \code{cluster_size}, \code{cluster_name}, \code{unit_name}, \code{icc}).}
 
 \item{predictors}{Optional list of predictor specifications (see \code{\link[=spec_predictor]{spec_predictor()}}).}
+
+\item{predictor_corr}{Optional numeric positive-definite correlation matrix of
+dimension \verb{length(predictors) x length(predictors)} specifying correlations
+among same-level predictors (defaults to \code{NULL} for independent predictors).}
 
 \item{outcome}{Optional named list specifying \code{name}, \code{family}, \code{link}, and \code{residual_sd}.}
 

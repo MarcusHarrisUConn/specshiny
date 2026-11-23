@@ -305,10 +305,15 @@ translate_prompt_backend.spec_translator_rule <- function(translator, prompt) {
       }
     }
 
-    # ICC
-    m_icc <- reg_capture("\\b(?:icc|intraclass\\s+correlation)\\s*(?:=|of|is|:)?\\s*(0?\\.\\d+|0)\\b", low)
+    # ICC (supports both proportions "ICC 0.2" and percentages "ICC 20%" / "20% ICC")
+    m_icc <- reg_capture("\\b(?:icc|intraclass\\s+correlation)\\s*(?:=|of|is|:)?\\s*(\\d+(?:\\.\\d+)?)\\s*(%|percent)?\\b", low)
+    if (is.null(m_icc)) {
+      m_icc <- reg_capture("\\b(\\d+(?:\\.\\d+)?)\\s*(%|percent)\\s+(?:icc|intraclass\\s+correlation)\\b", low)
+    }
     if (!is.null(m_icc)) {
-      icc <- as.numeric(m_icc[[1L]])
+      raw_icc <- as.numeric(m_icc[[1L]])
+      has_pct <- length(m_icc) >= 2L && nzchar(m_icc[[2L]])
+      icc <- if (has_pct || raw_icc > 1) raw_icc / 100 else raw_icc
       mark_parsed("hierarchy.icc")
     }
 
@@ -411,9 +416,16 @@ translate_prompt_backend.spec_translator_rule <- function(translator, prompt) {
     } else {
       1L
     }
-    m_trt <- reg_capture("\\b(?:treatment|intervention|trt)\\s+(?:effect(?:\\s+size)?|beta|coef(?:ficient)?)\\s*(?:=|of|is)?\\s*(-?\\d+(?:\\.\\d+)?)\\b", low)
-    if (is.null(m_trt)) {
-      m_trt <- reg_capture("\\beffect\\s+size\\s*(?:=|of|is)?\\s*(-?\\d+(?:\\.\\d+)?)\\b", low)
+    m_trt_raw <- reg_capture("\\b(negative\\s+)?(?:treatment|intervention|trt)\\s+(?:effect(?:\\s+size)?|beta|coef(?:ficient)?)\\s*(?:=|of|is)?\\s*(-?\\d+(?:\\.\\d+)?)\\b", low)
+    if (is.null(m_trt_raw)) {
+      m_trt_raw <- reg_capture("\\b(negative\\s+)?effect\\s+size\\s*(?:=|of|is)?\\s*(-?\\d+(?:\\.\\d+)?)\\b", low)
+    }
+    m_trt <- if (!is.null(m_trt_raw)) {
+      val_t <- as.numeric(m_trt_raw[[2L]])
+      if (nzchar(m_trt_raw[[1L]]) && val_t > 0) val_t <- -val_t
+      as.character(val_t)
+    } else {
+      NULL
     }
     trt_beta <- if (!is.null(m_trt)) {
       mark_parsed("effects.fixed.treatment")
@@ -425,8 +437,16 @@ translate_prompt_backend.spec_translator_rule <- function(translator, prompt) {
                  0.35, c(0.2, 0.35, 0.5, 0.8), rationale[["effects.fixed.treatment"]])
       0.35
     }
+    m_tprev <- reg_capture("\\b(?:treatment|intervention|trt)\\s+(?:prevalence|prob(?:ability)?|allocation)\\s*(?:=|of|is)?\\s*(\\d+(?:\\.\\d+)?)\\s*(%|percent)?\\b", low)
+    trt_prob <- if (!is.null(m_tprev)) {
+      rp <- as.numeric(m_tprev[[1L]])
+      if (rp > 1 || (length(m_tprev) >= 2L && nzchar(m_tprev[[2L]]))) rp / 100 else rp
+    } else {
+      0.5
+    }
+    if (trt_prob <= 0 || trt_prob >= 1) trt_prob <- 0.5
     add_pred(
-      spec_predictor("treatment", level = trt_level, distribution = "binary", prob = 0.5, centering = "none", role = "treatment"),
+      spec_predictor("treatment", level = trt_level, distribution = "binary", prob = trt_prob, centering = "none", role = "treatment"),
       beta = trt_beta
     )
     mark_parsed("predictors.treatment")
@@ -440,13 +460,19 @@ translate_prompt_backend.spec_translator_rule <- function(translator, prompt) {
     }
   }
 
-  # Detect explicitly named predictors (x1, x2, x3, z1, z2, ses, age, baseline, covariate)
-  named_matches <- regmatches(low, gregexpr("\\b(x[1-9]|z[1-9]|ses|age|baseline|pretest)\\b", low, perl = TRUE))[[1L]]
+  # Detect explicitly named predictors (x1..x9, z1..z9, ses, age, baseline, pretest, income, score, time)
+  named_matches <- regmatches(low, gregexpr("\\b(x[1-9]|z[1-9]|ses|age|baseline|pretest|income|time)\\b", low, perl = TRUE))[[1L]]
   named_matches <- unique(named_matches)
   for (nm in named_matches) {
     # Check if level-2 explicitly mentioned near predictor
     p_lvl <- if (levels_val == 2L && grepl(sprintf("\\b(?:level[- ]?2|cluster[- ]?level)\\s+%s\\b", nm), low, perl = TRUE)) 2L else 1L
-    p_dist <- if (grepl(sprintf("\\bbinary\\s+%s\\b", nm), low, perl = TRUE)) "binary" else "normal"
+    p_dist <- if (grepl(sprintf("\\bbinary\\s+%s\\b", nm), low, perl = TRUE)) {
+      "binary"
+    } else if (grepl(sprintf("\\buniform\\s+%s\\b", nm), low, perl = TRUE)) {
+      "uniform"
+    } else {
+      "normal"
+    }
     p_cent <- if (levels_val == 2L && p_lvl == 1L && grepl("\\b(group[- ]?mean|cluster[- ]?mean)\\s+center", low, perl = TRUE)) {
       "group_mean"
     } else if (grepl("\\bgrand[- ]?mean\\s+center", low, perl = TRUE)) {
@@ -458,14 +484,19 @@ translate_prompt_backend.spec_translator_rule <- function(translator, prompt) {
     if (is.null(m_b)) {
       m_b <- reg_capture(sprintf("\\b(?:effect|slope|beta)\\s+(?:of|for)\\s+%s\\s*(?:=|of|is)?\\s*(-?\\d+(?:\\.\\d+)?)\\b", nm), low)
     }
+    if (is.null(m_b)) {
+      m_b <- reg_capture(sprintf("\\b%s\\s*=\\s*(-?\\d+(?:\\.\\d+)?)\\b", nm), low)
+    }
     b_val <- if (!is.null(m_b)) {
       mark_parsed(paste0("effects.fixed.", nm))
       as.numeric(m_b[[1L]])
     } else if (!has_treatment && identical(nm, named_matches[[1L]])) {
-      m_gen <- reg_capture("\\b(?:effect(?:\\s+size)?|beta|slope)\\s*(?:=|of|is)?\\s*(-?\\d+(?:\\.\\d+)?)\\b", low)
+      m_gen <- reg_capture("\\b(negative\\s+)?(?:effect(?:\\s+size)?|beta|slope)\\s*(?:=|of|is)?\\s*(-?\\d+(?:\\.\\d+)?)\\b", low)
       if (!is.null(m_gen)) {
         mark_parsed(paste0("effects.fixed.", nm))
-        as.numeric(m_gen[[1L]])
+        gv <- as.numeric(m_gen[[2L]])
+        if (nzchar(m_gen[[1L]]) && gv > 0) gv <- -gv
+        gv
       } else {
         rationale[[paste0("effects.fixed.", nm)]] <- sprintf("Fixed effect for '%s' was not specified; defaulted to 0.30.", nm)
         0.30
@@ -514,6 +545,18 @@ translate_prompt_backend.spec_translator_rule <- function(translator, prompt) {
   }
 
   focal_predictor <- if (has_treatment) "treatment" else predictors[[1L]]$name
+
+  # Optional predictor correlation matrix (same-level predictors)
+  pred_corr <- NULL
+  m_pcorr <- reg_capture("\\b(?:predictor|covariate)\\s+cor(?:relation)?\\s*(?:=|of|is)?\\s*(-?0?\\.\\d+)\\b", low)
+  if (is.null(m_pcorr)) {
+    m_pcorr <- reg_capture("\\bcorrelated\\s+(?:predictors|covariates)\\s+(?:with\\s+)?(?:r|rho|cor(?:relation)?)\\s*(?:=|of|is)?\\s*(-?0?\\.\\d+)\\b", low)
+  }
+  if (!is.null(m_pcorr) && length(predictors) >= 2L) {
+    rho_p <- as.numeric(m_pcorr[[1L]])
+    pred_corr <- build_same_level_corr_matrix(predictors, rho_p)
+    if (!is.null(pred_corr)) mark_parsed("predictor_corr")
+  }
 
   # --- 4. Random Effects (Slopes & Correlation) ---
   rand_slopes <- list()
@@ -603,13 +646,14 @@ translate_prompt_backend.spec_translator_rule <- function(translator, prompt) {
       mark_parsed("missingness.mechanism")
     }
 
-    m_pct <- reg_capture("\\b(\\d+(?:\\.\\d+)?)\\s*(?:%|percent)\\s*(?:mar|mcar)?\\s*(?:missingness|missing|attrition|dropout)\\b", low)
+    m_pct <- reg_capture("\\b(\\d+(?:\\.\\d+)?)\\s*(%|percent)?\\s*(?:mar|mcar)?\\s*(?:missingness|missing|attrition|dropout)\\b", low)
     if (is.null(m_pct)) {
       m_pct <- reg_capture("\\b(?:missingness|missing\\s+rate|attrition|dropout)\\s*(?:of|=|is)?\\s*(\\d+(?:\\.\\d+)?)\\s*(%|percent)?\\b", low)
     }
     if (!is.null(m_pct)) {
       raw_r <- as.numeric(m_pct[[1L]])
-      miss_rate <- if (raw_r > 1 || (length(m_pct) >= 2L && nzchar(m_pct[[2L]]))) raw_r / 100 else raw_r
+      has_pct <- length(m_pct) >= 2L && nzchar(m_pct[[2L]])
+      miss_rate <- if (has_pct || raw_r > 1) raw_r / 100 else raw_r
       if (miss_rate >= 0.95) miss_rate <- 0.90
       if (miss_rate <= 0) miss_rate <- 0.15
       mark_parsed("missingness.rate")
@@ -646,10 +690,14 @@ translate_prompt_backend.spec_translator_rule <- function(translator, prompt) {
     200L
   }
 
-  m_alpha <- reg_capture("\\balpha\\s*(?:=|of|is)?\\s*(0?\\.\\d+)\\b", low)
+  m_alpha <- reg_capture("\\balpha\\s*(?:=|of|is)?\\s*(\\d+(?:\\.\\d+)?)\\s*(%|percent)?\\b", low)
+  if (is.null(m_alpha)) {
+    m_alpha <- reg_capture("\\b(\\d+(?:\\.\\d+)?)\\s*(%|percent)\\s+significance\\b", low)
+  }
   alpha_val <- if (!is.null(m_alpha)) {
     mark_parsed("simulation.alpha")
-    as.numeric(m_alpha[[1L]])
+    ra <- as.numeric(m_alpha[[1L]])
+    if ((length(m_alpha) >= 2L && nzchar(m_alpha[[2L]])) || ra >= 1) ra / 100 else ra
   } else {
     rationale[["simulation.alpha"]] <- "Significance level alpha was not specified; defaulted to 0.05 (two-sided)."
     0.05
@@ -703,6 +751,7 @@ translate_prompt_backend.spec_translator_rule <- function(translator, prompt) {
     tags = unique(c(design_type, paste0(levels_val, "-level"), out_family, if (miss_mech != "none") tolower(miss_mech))),
     hierarchy = hier_arg,
     predictors = predictors,
+    predictor_corr = pred_corr,
     outcome = list(name = "y", family = out_family, link = out_link, residual_sd = residual_sd),
     effects = list(
       intercept = 0,
@@ -755,7 +804,7 @@ refine_spec_backend.spec_translator_rule <- function(translator, spec, instructi
 
   mark <- function(p) parsed <<- unique(c(parsed, p))
 
-  # 1. Switch to 2-level or 1-level
+  # 1. Switch between 1-level and 2-level
   if (grepl("\\b(switch\\s+to\\s+2[- ]?level|make\\s+(?:it\\s+)?multilevel|add\\s+clustering)\\b", low, perl = TRUE) &&
       identical(as.integer(s$hierarchy$levels), 1L)) {
     s$hierarchy$levels <- 2L
@@ -768,6 +817,30 @@ refine_spec_backend.spec_translator_rule <- function(translator, spec, instructi
     if (s$design_type == "monte_carlo_lm") s$design_type <- "multilevel_sim"
     s$estimator$engine <- infer_default_engine(2L, s$outcome$family, 1L)
     s$simulation$parameter_grid$n_obs <- NULL
+    mark("hierarchy.levels")
+  } else if (grepl("\\b(switch\\s+to\\s+1[- ]?level|make\\s+(?:it\\s+)?single[- ]?level|remove\\s+clustering)\\b", low, perl = TRUE) &&
+             identical(as.integer(s$hierarchy$levels), 2L)) {
+    s$hierarchy$levels <- 1L
+    s$hierarchy$n_obs <- max(50L, as.integer(spec_total_n(s)))
+    s$hierarchy$n_clusters <- NULL
+    s$hierarchy$cluster_size <- NULL
+    s$hierarchy$cluster_name <- NULL
+    s$hierarchy$icc <- NULL
+    for (idx in seq_along(s$predictors)) {
+      s$predictors[[idx]]$level <- 1L
+      if (identical(s$predictors[[idx]]$centering, "group_mean")) {
+        s$predictors[[idx]]$centering <- "grand_mean"
+      }
+    }
+    s$effects$random$intercept <- FALSE
+    s$effects$random$intercept_sd <- NULL
+    s$effects$random$slopes <- list()
+    s$effects$random$corr_matrix <- NULL
+    if (s$design_type %in% c("multilevel_sim", "two_level_mlm")) s$design_type <- "monte_carlo_lm"
+    s$estimator$engine <- infer_default_engine(1L, s$outcome$family, 0L)
+    s$simulation$parameter_grid$n_clusters <- NULL
+    s$simulation$parameter_grid$cluster_size <- NULL
+    s$simulation$parameter_grid$icc <- NULL
     mark("hierarchy.levels")
   }
 
@@ -791,9 +864,11 @@ refine_spec_backend.spec_translator_rule <- function(translator, spec, instructi
       mark("hierarchy.cluster_size")
     }
 
-    m_icc <- reg_capture("\\b(?:icc|intraclass\\s+correlation)\\s*(?:to|=|of|is)?\\s*(0?\\.\\d+|0)\\b", low)
+    m_icc <- reg_capture("\\b(?:icc|intraclass\\s+correlation)\\s*(?:to|=|of|is)?\\s*(\\d+(?:\\.\\d+)?)\\s*(%|percent)?\\b", low)
     if (!is.null(m_icc)) {
-      s$hierarchy$icc <- as.numeric(m_icc[[1L]])
+      raw_icc <- as.numeric(m_icc[[1L]])
+      has_pct <- length(m_icc) >= 2L && nzchar(m_icc[[2L]])
+      s$hierarchy$icc <- if (has_pct || raw_icc > 1) raw_icc / 100 else raw_icc
       s$effects$random$intercept_sd <- NULL
       mark("hierarchy.icc")
     }
@@ -831,13 +906,21 @@ refine_spec_backend.spec_translator_rule <- function(translator, spec, instructi
     mark("outcome.family")
   }
 
+  if (grepl("\\bprobit\\s+link\\b|\\buse\\s+probit\\b", low, perl = TRUE) && identical(s$outcome$family, "binomial")) {
+    s$outcome$link <- "probit"
+    mark("outcome.link")
+  } else if (grepl("\\blogit\\s+link\\b|\\buse\\s+logit\\b", low, perl = TRUE) && identical(s$outcome$family, "binomial")) {
+    s$outcome$link <- "logit"
+    mark("outcome.link")
+  }
+
   m_rsd <- reg_capture("\\b(?:residual\\s+sd|sigma)\\s*(?:to|=|of)?\\s*(\\d+(?:\\.\\d+)?)\\b", low)
   if (!is.null(m_rsd) && identical(s$outcome$family, "gaussian")) {
     s$outcome$residual_sd <- as.numeric(m_rsd[[1L]])
     mark("outcome.residual_sd")
   }
 
-  # 4. Add / remove predictors
+  # 4. Add / remove predictors (and keep predictor_corr synchronized)
   m_addp <- reg_capture("\\badd\\s+(?:a\\s+)?(?:(binary|uniform|normal)\\s+)?(?:(level[- ]?2|cluster[- ]?level)\\s+)?(?:predictor|covariate)\\s+([a-z][a-z0-9_]*)\\b", low)
   if (!is.null(m_addp)) {
     p_dist <- if (nzchar(m_addp[[1L]])) m_addp[[1L]] else "normal"
@@ -847,15 +930,23 @@ refine_spec_backend.spec_translator_rule <- function(translator, spec, instructi
     if (is_valid_r_ident(p_name) && !(p_name %in% existing)) {
       s$predictors[[length(s$predictors) + 1L]] <- spec_predictor(p_name, level = p_lvl, distribution = p_dist)
       s$effects$fixed[[p_name]] <- 0.2
+      if (is.matrix(s$predictor_corr)) {
+        s$predictor_corr <- resize_corr_matrix(s$predictor_corr, length(s$predictors))
+      }
       mark(paste0("predictors.", p_name))
     }
   }
 
-  m_remp <- reg_capture("\\bremove\\s+(?:predictor|covariate)\\s+([a-z][a-z0-9_]*)\\b", low)
+  m_remp <- reg_capture("\\b(?:remove|drop)\\s+(?:(?:predictor|covariate)\\s+)?([a-z][a-z0-9_]*)\\b", low)
   if (!is.null(m_remp)) {
     rem_nm <- m_remp[[1L]]
-    if (length(s$predictors) > 1L) {
-      s$predictors <- Filter(function(p) !identical(p$name, rem_nm), s$predictors)
+    existing <- vapply(s$predictors, `[[`, character(1), "name")
+    if (rem_nm %in% existing && length(s$predictors) > 1L) {
+      keep_idx <- which(existing != rem_nm)
+      s$predictors <- s$predictors[keep_idx]
+      if (is.matrix(s$predictor_corr)) {
+        s$predictor_corr <- if (length(keep_idx) >= 2L) s$predictor_corr[keep_idx, keep_idx, drop = FALSE] else NULL
+      }
       s$effects$fixed[[rem_nm]] <- NULL
       if (identical(s$effects$focal_predictor, rem_nm)) {
         s$effects$focal_predictor <- s$predictors[[1L]]$name
@@ -865,6 +956,21 @@ refine_spec_backend.spec_translator_rule <- function(translator, spec, instructi
       }
       s <- remove_random_slope_helper(s, rem_nm)
       mark(paste0("predictors.", rem_nm))
+    }
+  }
+
+  # 4b. Predictor correlation updates
+  if (grepl("\\b(?:remove|clear|drop)\\s+predictor\\s+cor(?:relation)?\\b", low, perl = TRUE)) {
+    s$predictor_corr <- NULL
+    mark("predictor_corr")
+  } else {
+    m_pc <- reg_capture("\\b(?:predictor|covariate)\\s+cor(?:relation)?\\s*(?:to|=|of)?\\s*(-?0?\\.\\d+)\\b", low)
+    if (!is.null(m_pc) && length(s$predictors) >= 2L) {
+      pcm <- build_same_level_corr_matrix(s$predictors, as.numeric(m_pc[[1L]]))
+      if (!is.null(pcm)) {
+        s$predictor_corr <- pcm
+        mark("predictor_corr")
+      }
     }
   }
 
@@ -962,22 +1068,31 @@ refine_spec_backend.spec_translator_rule <- function(translator, spec, instructi
       s$missingness$mechanism <- "MAR"
     }
 
-    m_pct <- reg_capture("\\b(\\d+(?:\\.\\d+)?)\\s*(?:%|percent)\\s*(?:mar|mcar)?\\s*(?:missingness|missing|attrition)\\b", low)
+    m_pct <- reg_capture("\\b(\\d+(?:\\.\\d+)?)\\s*(%|percent)?\\s*(?:mar|mcar)?\\s*(?:missingness|missing|attrition)\\b", low)
     if (is.null(m_pct)) {
       m_pct <- reg_capture("\\b(?:missingness|missing\\s+rate|attrition)\\s*(?:to|=|of)?\\s*(\\d+(?:\\.\\d+)?)\\s*(%|percent)?\\b", low)
     }
     if (!is.null(m_pct)) {
       r <- as.numeric(m_pct[[1L]])
-      s$missingness$rate <- if (r > 1 || (length(m_pct) >= 2L && nzchar(m_pct[[2L]]))) r / 100 else r
+      has_pct <- length(m_pct) >= 2L && nzchar(m_pct[[2L]])
+      s$missingness$rate <- if (has_pct || r > 1) r / 100 else r
     } else if (s$missingness$rate <= 0) {
       s$missingness$rate <- 0.15
     }
 
     if (identical(s$missingness$mechanism, "MAR")) {
-      if (is.null(s$missingness$auxiliary)) {
+      m_aux <- reg_capture("\\b(?:mar\\s+)?auxiliary\\s*(?:to|=|of)?\\s*([a-z][a-z0-9_]*)\\b", low)
+      if (!is.null(m_aux) && m_aux[[1L]] %in% vapply(s$predictors, `[[`, character(1), "name")) {
+        s$missingness$auxiliary <- m_aux[[1L]]
+        mark("missingness.auxiliary")
+      } else if (is.null(s$missingness$auxiliary)) {
         s$missingness$auxiliary <- s$predictors[[1L]]$name
       }
-      if (is.null(s$missingness$strength)) {
+      m_str <- reg_capture("\\b(?:mar\\s+)?strength\\s*(?:to|=|of)?\\s*(-?\\d+(?:\\.\\d+)?)\\b", low)
+      if (!is.null(m_str)) {
+        s$missingness$strength <- as.numeric(m_str[[1L]])
+        mark("missingness.strength")
+      } else if (is.null(s$missingness$strength)) {
         s$missingness$strength <- 1.0
       }
     } else {
@@ -998,9 +1113,10 @@ refine_spec_backend.spec_translator_rule <- function(translator, spec, instructi
     mark("simulation.n_reps")
   }
 
-  m_alpha <- reg_capture("\\balpha\\s*(?:to|=|of)?\\s*(0?\\.\\d+)\\b", low)
+  m_alpha <- reg_capture("\\balpha\\s*(?:to|=|of)?\\s*(\\d+(?:\\.\\d+)?)\\s*(%|percent)?\\b", low)
   if (!is.null(m_alpha)) {
-    s$simulation$alpha <- as.numeric(m_alpha[[1L]])
+    ra <- as.numeric(m_alpha[[1L]])
+    s$simulation$alpha <- if ((length(m_alpha) >= 2L && nzchar(m_alpha[[2L]])) || ra >= 1) ra / 100 else ra
     s$estimator$conf_level <- 1 - s$simulation$alpha
     mark("simulation.alpha")
   }
@@ -1019,6 +1135,14 @@ refine_spec_backend.spec_translator_rule <- function(translator, spec, instructi
     mark("estimator.reml")
   }
 
+  # Explicit estimator switch when statistically compatible (e.g., lm <-> glm for 1-level Gaussian)
+  explicit_engine <- NULL
+  if (grepl("\\b(?:switch\\s+to|use)\\s+glm\\b", low, perl = TRUE)) {
+    explicit_engine <- "glm"
+  } else if (grepl("\\b(?:switch\\s+to|use)\\s+lm\\b", low, perl = TRUE)) {
+    explicit_engine <- "lm"
+  }
+
   if (grepl("\\b(clear|remove|drop)\\s+(?:parameter\\s+)?grid\\b", low, perl = TRUE)) {
     s$simulation$parameter_grid <- list()
     mark("simulation.parameter_grid")
@@ -1034,7 +1158,12 @@ refine_spec_backend.spec_translator_rule <- function(translator, spec, instructi
 
   # Refresh estimator consistency if needed
   q_r <- as.integer(isTRUE(s$effects$random$intercept)) + length(s$effects$random$slopes)
-  s$estimator$engine <- infer_default_engine(as.integer(s$hierarchy$levels), s$outcome$family, q_r)
+  if (!is.null(explicit_engine) && identical(as.integer(s$hierarchy$levels), 1L) && identical(s$outcome$family, "gaussian")) {
+    s$estimator$engine <- explicit_engine
+    mark("estimator.engine")
+  } else {
+    s$estimator$engine <- infer_default_engine(as.integer(s$hierarchy$levels), s$outcome$family, q_r)
+  }
 
   list(
     spec = as_spec_ir(s, validate = FALSE),
@@ -1179,6 +1308,24 @@ resize_corr_matrix <- function(old_cm, q_new) {
     diag(new_cm) <- 1
   }
   new_cm
+}
+
+build_same_level_corr_matrix <- function(predictors, rho) {
+  p <- length(predictors)
+  if (p < 2L || !is_num_scalar(rho) || abs(rho) >= 0.99) return(NULL)
+  lvls <- vapply(predictors, function(pr) as.integer(pr$level), integer(1))
+  cm <- diag(p)
+  for (i in seq_len(p - 1L)) {
+    for (j in seq.int(i + 1L, p)) {
+      if (lvls[[i]] == lvls[[j]]) {
+        cm[i, j] <- rho
+        cm[j, i] <- rho
+      }
+    }
+  }
+  eigs <- eigen(cm, symmetric = TRUE, only.values = TRUE)$values
+  if (min(eigs) <= 1e-8) return(NULL)
+  cm
 }
 
 apply_ir_path_value <- function(spec, path, value) {

@@ -57,13 +57,17 @@ as_spec_json <- function(spec, pretty = TRUE) {
 #' spec2 <- parse_spec_text(txt, format = "yaml")
 parse_spec_text <- function(text, format = c("yaml", "json"), validate = TRUE) {
   format <- match.arg(format)
-  if (!is.character(text) || length(text) != 1L || !nzchar(trimws(text))) {
+  if (!is_chr_scalar(text) || !nzchar(trimws(text))) {
     cli::cli_abort("{.arg text} must be a non-empty character scalar.")
   }
 
   raw_obj <- if (format == "yaml") {
-    yaml::yaml.load(text)
+    assert_safe_yaml_input(text)
+    yaml::yaml.load(text, eval.expr = FALSE)
   } else {
+    if (nchar(text, type = "bytes") > 1048576L) {
+      cli::cli_abort("JSON specification exceeds maximum allowed size (1 MB).", class = "specshiny_security_error")
+    }
     jsonlite::fromJSON(text, simplifyVector = FALSE)
   }
 
@@ -139,7 +143,14 @@ spec_to_serializable <- function(spec, target = c("yaml", "json")) {
   target <- match.arg(target)
   x <- unclass(spec)
 
-  # Convert correlation matrix to list-of-rows so YAML & JSON both store clean 2D arrays
+  # Convert correlation matrices to list-of-rows so YAML & JSON store clean 2D arrays
+  if (is.matrix(x$predictor_corr)) {
+    pcm <- x$predictor_corr
+    x$predictor_corr <- lapply(seq_len(nrow(pcm)), function(i) {
+      row_vals <- as.numeric(pcm[i, ])
+      if (target == "json") I(row_vals) else row_vals
+    })
+  }
   if (is.list(x$effects) && is.list(x$effects$random) && is.matrix(x$effects$random$corr_matrix)) {
     cm <- x$effects$random$corr_matrix
     x$effects$random$corr_matrix <- lapply(seq_len(nrow(cm)), function(i) {

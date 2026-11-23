@@ -148,6 +148,17 @@ spec_to_math <- function(spec) {
             paste(beta_defs, collapse = ", \\; "))
   )
 
+  if (!is.null(spec$predictor_corr) && is.matrix(spec$predictor_corr) && nrow(spec$predictor_corr) >= 2L) {
+    off_vals <- spec$predictor_corr[upper.tri(spec$predictor_corr)]
+    if (any(abs(off_vals) > 1e-8)) {
+      lines <- c(
+        lines,
+        sprintf("\\text{Predictor Corr:} &\\quad \\text{Corr}(\\mathbf{X}) = \\mathbf{R}_X \\; (\\max_{a \\ne b} |r_{ab}| = %s)",
+                format(round(max(abs(off_vals)), 3), trim = TRUE))
+      )
+    }
+  }
+
   if (!identical(spec$missingness$mechanism, "none")) {
     miss_line <- if (identical(spec$missingness$mechanism, "MCAR")) {
       sprintf("\\text{Missingness:} &\\quad \\text{MCAR on } \\text{%s}, \\; P(R = 1) = %s",
@@ -192,8 +203,4 @@ spec_to_math <- function(spec) {
     text = text_str,
     latex = latex_str
   )
-}
-
-escape_latex_ident <- function(x) {
-  gsub("_", "\\\\_", as.character(x), fixed = TRUE)
 }

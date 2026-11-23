@@ -206,6 +206,24 @@ spec_to_controls <- function(spec) {
       choices = cent_choices
     )
   }
+  if (!is.null(spec$predictor_corr) && is.matrix(spec$predictor_corr) && length(pred_names) >= 2L) {
+    pcm <- spec$predictor_corr
+    p_lvls <- vapply(spec$predictors, function(pr) as.integer(pr$level), integer(1))
+    for (i in seq_len(length(pred_names) - 1L)) {
+      for (j in seq.int(i + 1L, length(pred_names))) {
+        if (p_lvls[[i]] == p_lvls[[j]]) {
+          pred_ctrls[[length(pred_ctrls) + 1L]] <- make_ctrl(
+            id = sprintf("pcorr_%d_%d", i, j),
+            path = "predictor_corr",
+            label = sprintf("Predictor Corr (%s, %s)", pred_names[[i]], pred_names[[j]]),
+            type = "slider",
+            value = as.numeric(pcm[i, j]),
+            min = -0.95, max = 0.95, step = 0.05
+          )
+        }
+      }
+    }
+  }
   sections$predictors <- list(
     id = "predictors",
     title = "Predictors & Fixed Effects",
@@ -557,6 +575,18 @@ patch_spec_from_control <- function(spec, control_id, value) {
       cm[r_i, c_j] <- rho
       cm[c_j, r_i] <- rho
       s$effects$random$corr_matrix <- cm
+    }
+  } else if (grepl("^pcorr_\\d+_\\d+$", control_id)) {
+    m <- reg_capture("^pcorr_(\\d+)_(\\d+)$", control_id)
+    r_i <- as.integer(m[[1L]])
+    c_j <- as.integer(m[[2L]])
+    p_len <- length(s$predictors)
+    pcm <- s$predictor_corr %||% diag(p_len)
+    rho <- suppressWarnings(as.numeric(value))
+    if (is.matrix(pcm) && r_i <= nrow(pcm) && c_j <= ncol(pcm) && length(rho) == 1L) {
+      pcm[r_i, c_j] <- rho
+      pcm[c_j, r_i] <- rho
+      s$predictor_corr <- pcm
     }
   } else if (grepl("^grid_", control_id)) {
     gn <- sub("^grid_", "", control_id)

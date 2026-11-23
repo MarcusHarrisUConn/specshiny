@@ -98,6 +98,9 @@ spec_predictor <- function(name,
 #' @param hierarchy Optional named list specifying data hierarchy (`levels`, `n_obs`,
 #'   `n_clusters`, `cluster_size`, `cluster_name`, `unit_name`, `icc`).
 #' @param predictors Optional list of predictor specifications (see [spec_predictor()]).
+#' @param predictor_corr Optional numeric positive-definite correlation matrix of
+#'   dimension `length(predictors) x length(predictors)` specifying correlations
+#'   among same-level predictors (defaults to `NULL` for independent predictors).
 #' @param outcome Optional named list specifying `name`, `family`, `link`, and `residual_sd`.
 #' @param effects Optional named list specifying `intercept`, `fixed`, `focal_predictor`,
 #'   and `random` (`intercept`, `intercept_sd`, `slopes`, `corr_matrix`).
@@ -130,6 +133,7 @@ new_spec_ir <- function(design_type = "monte_carlo_lm",
                         tags = character(),
                         hierarchy = list(),
                         predictors = NULL,
+                        predictor_corr = NULL,
                         outcome = list(),
                         effects = list(),
                         missingness = list(),
@@ -414,6 +418,7 @@ new_spec_ir <- function(design_type = "monte_carlo_lm",
       design_type = design_type,
       hierarchy = hier_obj,
       predictors = pred_list,
+      predictor_corr = normalize_corr_matrix(predictor_corr),
       outcome = outcome_obj,
       effects = effects_obj,
       missingness = missingness_obj,
@@ -545,7 +550,7 @@ maybe_int <- function(x) {
 
 normalize_predictor <- function(p) {
   if (!is.list(p)) return(p)
-  list(
+  out <- list(
     name = p$name,
     level = maybe_int(p$level %||% 1L),
     distribution = p$distribution %||% "normal",
@@ -557,13 +562,15 @@ normalize_predictor <- function(p) {
     centering = p$centering %||% "none",
     role = p$role %||% "covariate"
   )
+  extra <- setdiff(names(p), names(out))
+  for (ek in extra) out[[ek]] <- p[[ek]]
+  out
 }
 
 normalize_slopes <- function(slopes) {
   if (is.null(slopes) || length(slopes) == 0L) {
     return(list())
   }
-  # Support data.frame (from jsonlite simplifyVector = TRUE) or list-of-lists
   if (is.data.frame(slopes)) {
     return(lapply(seq_len(nrow(slopes)), function(i) {
       list(
@@ -574,10 +581,13 @@ normalize_slopes <- function(slopes) {
   }
   lapply(unname(as.list(slopes)), function(s) {
     if (!is.list(s)) return(s)
-    list(
+    out <- list(
       predictor = s$predictor,
       sd = s$sd
     )
+    extra <- setdiff(names(s), names(out))
+    for (ek in extra) out[[ek]] <- s[[ek]]
+    out
   })
 }
 
@@ -645,6 +655,12 @@ normalize_spec_ir <- function(x) {
     })
   } else if (is.list(out$predictors)) {
     out$predictors <- lapply(unname(out$predictors), normalize_predictor)
+  }
+
+  if ("predictor_corr" %in% names(out)) {
+    out$predictor_corr <- normalize_corr_matrix(out$predictor_corr)
+  } else {
+    out$predictor_corr <- NULL
   }
 
   if (is.list(out$effects)) {

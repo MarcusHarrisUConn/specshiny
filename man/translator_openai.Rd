@@ -9,30 +9,40 @@ translator_openai(
   api_key = Sys.getenv("OPENAI_API_KEY"),
   base_url = "https://api.openai.com/v1",
   temperature = 0,
-  timeout = 60
+  timeout = 60,
+  max_response_bytes = 524288L,
+  allow_http_local = FALSE
 )
 }
 \arguments{
 \item{model}{Character model identifier (e.g., \code{"gpt-4o-mini"}).}
 
-\item{api_key}{API key scalar; defaults to \code{Sys.getenv("OPENAI_API_KEY")}.}
+\item{api_key}{API key scalar; defaults to \code{Sys.getenv("OPENAI_API_KEY")}.
+Stored in a private environment and masked in printed output and errors.}
 
 \item{base_url}{Base API URL (defaults to \code{"https://api.openai.com/v1"}).}
 
 \item{temperature}{Numeric sampling temperature (defaults to \code{0} for reproducibility).}
 
-\item{timeout}{Numeric HTTP timeout in seconds.}
+\item{timeout}{Numeric HTTP timeout in seconds (\code{1} to \code{600}).}
+
+\item{max_response_bytes}{Maximum permitted HTTP response size in bytes
+(defaults to \code{524288L}, i.e., 512 KB).}
+
+\item{allow_http_local}{Logical; if \code{TRUE}, allows \verb{http://localhost} or
+\verb{http://127.0.0.1} endpoints for local OpenAI-compatible servers.}
 }
 \value{
 An S3 object of class \code{c("spec_translator_openai", "spec_translator")}.
 }
 \description{
 Configures an \code{httr2}-based translator targeting any OpenAI-compatible
-\verb{/chat/completions} endpoint. Responses are constrained to JSON and parsed
-strictly via \code{jsonlite::fromJSON()} (never \code{eval(parse())}) before passing
-through \code{\link[=validate_spec_ir]{validate_spec_ir()}}.
+\verb{/chat/completions} endpoint. Enforces strict URL validation (HTTPS by
+default), API key masking in prints and error traces, bounded HTTP timeouts
+and maximum response sizes, JSON-only parsing via \code{jsonlite::fromJSON()}
+(never \code{eval(parse())}), and strict validation via \code{\link[=validate_spec_ir]{validate_spec_ir()}}.
 }
 \examples{
-tr <- translator_openai(model = "gpt-4o-mini", api_key = "demo-key")
+tr <- translator_openai(model = "gpt-4o-mini", api_key = "sk-demo-1234567890")
 print(tr)
 }

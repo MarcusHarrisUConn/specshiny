@@ -3,8 +3,11 @@
 #' Generates a clean, self-contained Quarto markdown document combining a
 #' structured study overview, LaTeX mathematical model specification, an
 #' auditable table of inferred defaults and rationales, the validated YAML IR,
-#' and the deterministic executable simulation script produced by
-#' [compile_r_script()].
+#' and the deterministic AST-verified simulation script produced by
+#' [compile_r_script()]. All free-text metadata, prompts, and rationales are
+#' strictly sanitized against Quarto frontmatter breakouts, inline knitr code
+#' execution, markdown code-fence escapes, HTML/XSS tags, and dangerous LaTeX
+#' macros.
 #'
 #' @param spec A validated `spec_ir` object.
 #' @param file Optional file path; when provided, writes the `.qmd` report to
@@ -30,22 +33,21 @@ compile_quarto_report <- function(spec,
                                   execute = TRUE) {
   assert_valid_spec_ir(spec)
 
-  if (!is_chr_scalar(format) || !grepl("^[a-zA-Z0-9_-]+$", format)) {
-    cli::cli_abort("{.arg format} must be a simple Quarto format name such as {.val html} or {.val pdf}.")
+  if (!is_chr_scalar(format) || !is_pure_ascii(format) || !grepl("^[a-zA-Z0-9_-]{1,32}$", format, perl = TRUE)) {
+    cli::cli_abort("{.arg format} must be a simple ASCII Quarto format name such as {.val html} or {.val pdf}.")
   }
 
   math_info <- spec_to_math(spec)
   r_code <- compile_r_script(spec, include_header = FALSE, run_on_source = TRUE)
-  yaml_ir <- as_spec_yaml(spec)
+  yaml_ir <- sanitize_yaml_block_for_quarto(as_spec_yaml(spec))
 
-  title_clean <- sanitize_comment(spec$metadata$title)
   eval_flag <- if (isTRUE(execute)) "true" else "false"
   levels_val <- as.integer(spec$hierarchy$levels)
 
-  # Build YAML front matter safely
+  # Build YAML front matter safely (neutralizes newlines, !expr, backticks, HTML, LaTeX)
   front_matter <- paste(
     "---",
-    sprintf("title: %s", yaml_quote_scalar(title_clean)),
+    sprintf("title: %s", sanitize_yaml_frontmatter_scalar(spec$metadata$title)),
     sprintf("subtitle: \"Reproducible Statistical Simulation Report (specshiny IR v%s)\"", spec$schema_version),
     sprintf("format: %s", format),
     "execute:",
@@ -84,14 +86,16 @@ compile_quarto_report <- function(spec,
     "Single design cell"
   }
 
+  prompt_block <- if (!is.null(spec$metadata$source_prompt) && nzchar(spec$metadata$source_prompt)) {
+    paste0("> **Originating Prompt:** ", sanitize_quarto_prose(spec$metadata$source_prompt), "\n")
+  } else {
+    ""
+  }
+
   overview_tbl <- paste(
     "## 1. Study Design Overview",
     "",
-    if (!is.null(spec$metadata$source_prompt) && nzchar(spec$metadata$source_prompt)) {
-      paste0("> **Originating Prompt:** ", sanitize_comment(spec$metadata$source_prompt), "\n")
-    } else {
-      ""
-    },
+    prompt_block,
     "| Component | Specification |",
     "| :--- | :--- |",
     sprintf("| **Design Type** | `%s` |", spec$design_type),
@@ -108,7 +112,7 @@ compile_quarto_report <- function(spec,
     sep = "\n"
   )
 
-  # Mathematical specification section
+  # Mathematical specification section (all identifiers strictly ASCII-validated)
   math_sec <- paste(
     "## 2. Mathematical Model Specification",
     "",
@@ -120,11 +124,11 @@ compile_quarto_report <- function(spec,
     sep = "\n"
   )
 
-  # Defaults rationale section
+  # Defaults rationale section (every cell strictly sanitized against inline `r` & LaTeX)
   rat <- spec$defaults_rationale %||% list()
   if (length(rat) > 0L) {
     rat_rows <- vapply(names(rat), function(k) {
-      sprintf("| `%s` | %s |", sanitize_comment(k), sanitize_comment(rat[[k]]))
+      sprintf("| `%s` | %s |", sanitize_quarto_prose(k, 128L), sanitize_quarto_prose(rat[[k]], 1000L))
     }, character(1))
     rationale_sec <- paste(
       c(
@@ -147,16 +151,16 @@ compile_quarto_report <- function(spec,
     )
   }
 
-  # Validated IR YAML section
+  # Validated IR YAML section (6-tilde outer fence + sanitized interior blocks fence breakout)
   ir_sec <- paste(
     "## 4. Validated Specification IR (YAML)",
     "",
     "::: {.callout-note collapse=\"true\"}",
     "### View Complete Validated `spec_ir` YAML",
     "",
-    "```yaml",
+    "~~~~~~yaml",
     trimws(yaml_ir),
-    "```",
+    "~~~~~~",
     ":::",
     sep = "\n"
   )
@@ -165,7 +169,7 @@ compile_quarto_report <- function(spec,
   code_sec <- paste(
     "## 5. Deterministic Simulation Script & Results",
     "",
-    "The simulation script below was deterministically compiled from the validated IR above with zero evaluation of untrusted language-model strings.",
+    "The simulation script below was deterministically compiled and statically AST-verified from the validated IR above with zero evaluation of untrusted language-model strings.",
     "",
     "```{r}",
     "#| label: run-simulation",
@@ -174,7 +178,7 @@ compile_quarto_report <- function(spec,
     sep = "\n"
   )
 
-  # Optional summary table chunk
+  # Summary table chunk
   results_sec <- paste(
     "```{r}",
     "#| label: results-table",
@@ -200,10 +204,4 @@ compile_quarto_report <- function(spec,
     return(invisible(doc))
   }
   doc
-}
-
-yaml_quote_scalar <- function(x) {
-  x <- gsub("\\\\", "\\\\\\\\", x)
-  x <- gsub("\"", "\\\\\"", x)
-  paste0("\"", x, "\"")
 }

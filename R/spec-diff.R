@@ -180,6 +180,10 @@ flatten_spec_for_diff <- function(spec, ignore_rationale = TRUE, ignore_metadata
     }
   }
 
+  if (!is.null(spec$predictor_corr)) {
+    add_val("predictor_corr", spec$predictor_corr)
+  }
+
   if (is.list(spec$outcome)) {
     for (k in c("name", "family", "link", "residual_sd")) {
       add_val(paste0("outcome.", k), spec$outcome[[k]])
@@ -248,11 +252,21 @@ values_semantically_equal <- function(a, b) {
   if (is.null(a) || is.null(b)) return(FALSE)
   if (is.matrix(a) && is.matrix(b)) {
     if (!identical(dim(a), dim(b))) return(FALSE)
-    return(max(abs(as.numeric(a) - as.numeric(b))) < 1e-10)
+    an <- as.numeric(a)
+    bn <- as.numeric(b)
+    if (any(!is.finite(an)) || any(!is.finite(bn))) {
+      return(identical(an, bn))
+    }
+    return(isTRUE(max(abs(an - bn)) < 1e-10))
   }
   if (is.numeric(a) && is.numeric(b)) {
     if (length(a) != length(b)) return(FALSE)
-    return(max(abs(as.numeric(a) - as.numeric(b))) < 1e-10)
+    an <- as.numeric(a)
+    bn <- as.numeric(b)
+    if (any(!is.finite(an)) || any(!is.finite(bn))) {
+      return(identical(an, bn))
+    }
+    return(isTRUE(max(abs(an - bn)) < 1e-10))
   }
   identical(a, b)
 }

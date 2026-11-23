@@ -31,8 +31,14 @@ when \code{file} is provided).
 Compiles any schema- and statistically-validated \code{spec_ir} into a clean,
 readable, self-contained, and executable R simulation script using audited
 code templates. Never evaluates untrusted text or language-model strings;
-all identifiers and parameters pass \code{\link[=assert_valid_spec_ir]{assert_valid_spec_ir()}} and strict
-literal formatting before emission.
+all identifiers and parameters pass \code{\link[=assert_valid_spec_ir]{assert_valid_spec_ir()}} before emission,
+and every compiled script passes \code{\link[=verify_compiled_r_ast]{verify_compiled_r_ast()}} static AST
+verification before returning.
+}
+\details{
+Generated scripts use reproducible \verb{L'Ecuyer-CMRG} random number generation,
+exact Cholesky draws for correlated predictors and correlated random effects,
+calibrated logistic MAR missingness, and zero \code{do.call()} or \code{eval()} calls.
 }
 \examples{
 spec <- new_spec_ir(
@@ -41,5 +47,5 @@ spec <- new_spec_ir(
   simulation = list(n_reps = 20L, seed = 42L)
 )
 code <- compile_r_script(spec)
-cat(substr(code, 1, 400))
+verify_compiled_r_ast(code)
 }

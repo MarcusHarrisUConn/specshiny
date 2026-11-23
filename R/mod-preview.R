@@ -219,7 +219,7 @@ run_spec_preview_sim <- function(spec, max_reps = 10L) {
   true_beta <- as.numeric(spec$effects$fixed[[focal]])
   form <- stats::as.formula(spec_to_math(spec)$formula)
 
-  set.seed(as.integer(spec$simulation$seed))
+  set.seed(as.integer(spec$simulation$seed), kind = "L'Ecuyer-CMRG", normal.kind = "Inversion", sample.kind = "Rejection")
 
   run_one <- function() {
     if (levels_val == 1L) {
@@ -234,22 +234,55 @@ run_spec_preview_sim <- function(spec, max_reps = 10L) {
       dat <- stats::setNames(data.frame(factor(cluster_idx)), spec$hierarchy$cluster_name)
     }
 
-    for (p in spec$predictors) {
-      is_l2 <- levels_val == 2L && identical(as.integer(p$level), 2L)
-      dn <- if (is_l2) as.integer(spec$hierarchy$n_clusters) else n
-      vals <- switch(
-        p$distribution,
-        normal = stats::rnorm(dn, mean = p$mean, sd = p$sd),
-        binary = stats::rbinom(dn, size = 1L, prob = p$prob),
-        uniform = stats::runif(dn, min = p$min, max = p$max)
-      )
-      col_v <- if (is_l2) vals[cluster_idx] else vals
-      if (identical(p$centering, "grand_mean")) {
-        col_v <- col_v - mean(col_v)
-      } else if (identical(p$centering, "group_mean") && levels_val == 2L) {
-        col_v <- col_v - stats::ave(col_v, dat[[spec$hierarchy$cluster_name]], FUN = mean)
+    if (!is.null(spec$predictor_corr) && is.matrix(spec$predictor_corr)) {
+      p_lvls <- vapply(spec$predictors, function(pr) as.integer(pr$level), integer(1))
+      draw_lvl <- function(lvl_idx, draw_n, expand_cl) {
+        k <- length(lvl_idx)
+        if (k == 0L) return(invisible(NULL))
+        Z <- if (k == 1L) {
+          matrix(stats::rnorm(draw_n), nrow = draw_n, ncol = 1L)
+        } else {
+          R_sub <- spec$predictor_corr[lvl_idx, lvl_idx, drop = FALSE]
+          matrix(stats::rnorm(draw_n * k), nrow = draw_n, ncol = k) %*% chol(R_sub)
+        }
+        for (pos in seq_len(k)) {
+          p <- spec$predictors[[lvl_idx[[pos]]]]
+          zv <- Z[, pos]
+          vals <- switch(
+            p$distribution,
+            normal = p$mean + p$sd * zv,
+            binary = as.integer(stats::pnorm(zv) < p$prob),
+            uniform = p$min + (p$max - p$min) * stats::pnorm(zv)
+          )
+          col_v <- if (expand_cl) vals[cluster_idx] else vals
+          if (identical(p$centering, "grand_mean")) {
+            col_v <- col_v - mean(col_v)
+          } else if (identical(p$centering, "group_mean") && levels_val == 2L) {
+            col_v <- col_v - stats::ave(col_v, dat[[spec$hierarchy$cluster_name]], FUN = mean)
+          }
+          dat[[p$name]] <<- col_v
+        }
       }
-      dat[[p$name]] <- col_v
+      draw_lvl(which(p_lvls == 1L), n, FALSE)
+      if (levels_val == 2L) draw_lvl(which(p_lvls == 2L), as.integer(spec$hierarchy$n_clusters), TRUE)
+    } else {
+      for (p in spec$predictors) {
+        is_l2 <- levels_val == 2L && identical(as.integer(p$level), 2L)
+        dn <- if (is_l2) as.integer(spec$hierarchy$n_clusters) else n
+        vals <- switch(
+          p$distribution,
+          normal = stats::rnorm(dn, mean = p$mean, sd = p$sd),
+          binary = stats::rbinom(dn, size = 1L, prob = p$prob),
+          uniform = stats::runif(dn, min = p$min, max = p$max)
+        )
+        col_v <- if (is_l2) vals[cluster_idx] else vals
+        if (identical(p$centering, "grand_mean")) {
+          col_v <- col_v - mean(col_v)
+        } else if (identical(p$centering, "group_mean") && levels_val == 2L) {
+          col_v <- col_v - stats::ave(col_v, dat[[spec$hierarchy$cluster_name]], FUN = mean)
+        }
+        dat[[p$name]] <- col_v
+      }
     }
 
     eta <- rep(as.numeric(spec$effects$intercept), n)

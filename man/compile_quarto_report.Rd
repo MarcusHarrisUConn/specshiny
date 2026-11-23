@@ -25,8 +25,11 @@ when \code{file} is provided).
 Generates a clean, self-contained Quarto markdown document combining a
 structured study overview, LaTeX mathematical model specification, an
 auditable table of inferred defaults and rationales, the validated YAML IR,
-and the deterministic executable simulation script produced by
-\code{\link[=compile_r_script]{compile_r_script()}}.
+and the deterministic AST-verified simulation script produced by
+\code{\link[=compile_r_script]{compile_r_script()}}. All free-text metadata, prompts, and rationales are
+strictly sanitized against Quarto frontmatter breakouts, inline knitr code
+execution, markdown code-fence escapes, HTML/XSS tags, and dangerous LaTeX
+macros.
 }
 \examples{
 spec <- new_spec_ir(

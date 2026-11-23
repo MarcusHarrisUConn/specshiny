@@ -35,8 +35,8 @@ See [ARCHITECTURE.md](ARCHITECTURE.md) for the complete formal IR grammar, stati
   - Surfaces structured clarifying questions for underspecified parameters and records plain-language rationales for every default.
 - **Dynamic `bslib`/Shiny UI Synthesizer (`spec_to_controls()`, `mod_spec_composer_*`, `mod_spec_controls_*`, `mod_spec_preview_*`):**
   - Renders **only** the controls relevant to the active specification, maintains loop-free bidirectional sync between UI inputs and conversational edits, blocks invalid UI edits with inline statistical guardrail alerts, and highlights changes with live visual diff badges.
-- **Deterministic R & Quarto Compilers (`compile_r_script()`, `compile_quarto_report()`):**
-  - Converts any validated `spec_ir` into byte-for-byte deterministic, readable, standalone R simulation scripts and Quarto `.qmd` reports with LaTeX model equations—with **zero `eval(parse())`** of untrusted text.
+- **Deterministic R & Quarto Compilers (`compile_r_script()`, `compile_quarto_report()`, `verify_compiled_r_ast()`):**
+  - Converts any validated `spec_ir` into byte-for-byte deterministic, readable, standalone R simulation scripts (`L'Ecuyer-CMRG` RNG, Cholesky correlated predictors & random effects, calibrated MAR) and sanitized Quarto `.qmd` reports with LaTeX model equations—verified by a mandatory static positive-allowlist AST safety gate (`verify_compiled_r_ast()`) with **zero `eval(parse())`**.
 - **Bundled Reference Demo App (`run_specshiny_demo()`):**
   - Ships a ready-to-run `bslib` Shiny application demonstrating the complete neuro-symbolic pipeline out of the box.
 
@@ -81,6 +81,7 @@ run_specshiny_demo()
 - `vignette("getting-started", package = "specshiny")` — End-to-end neuro-symbolic workflow from English prompts to executed R scripts and Quarto reports.
 - `vignette("building-custom-apps", package = "specshiny")` — Building custom dynamic `bslib`/Shiny apps with `specshiny` modules, `testServer()` verification, and OpenAI/Ollama translators.
 - [ARCHITECTURE.md](ARCHITECTURE.md) — Formal IR specification, validation guardrails, and safety invariants.
+- [SECURITY.md](SECURITY.md) — Threat model, adversarial red-team audit findings, and static AST verification guarantees.
 
 ## License
 
