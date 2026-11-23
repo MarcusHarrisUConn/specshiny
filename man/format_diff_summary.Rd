@@ -17,3 +17,8 @@ A character scalar summarizing the changes.
 \description{
 Format a concise one-line or bullet summary of a \code{spec_diff}
 }
+\examples{
+s1 <- new_spec_ir(hierarchy = list(levels = 1L, n_obs = 100L))
+s2 <- new_spec_ir(hierarchy = list(levels = 1L, n_obs = 250L))
+format_diff_summary(diff_spec_ir(s1, s2))
+}

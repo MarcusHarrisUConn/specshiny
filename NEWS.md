@@ -1,3 +1,22 @@
+# specshiny 0.3.0
+
+## New Modeling & Simulation Capabilities (All AST-Verified)
+
+* Added two-way and cross-level interaction terms (`spec_interaction()`, `effects$interactions`) across `spec_ir` v1.1.0, `validate_spec_ir()`, `spec_to_math()`, `spec_to_controls()`, `translator_rule()`, `refine_spec()`, `compile_r_script()`, and `mod_spec_preview_server()`, including targeting interactions (e.g., `x1:z1`) directly as `effects$focal_predictor`.
+* Added unbalanced 2-level cluster sizes (`hierarchy$cluster_size_dist` supporting `"fixed"`, `"normal"`, and `"poisson"` plus `hierarchy$cluster_size_sd`) with automatic identifiability floor guards.
+* Added heavy-tailed Student-t (`outcome$error_dist = "t"`, `outcome$error_df > 2`) and skewed standardized gamma (`outcome$error_dist = "skewed"`, `outcome$error_skew` in `[-4, 4] \ {0}`) level-1 Gaussian error distributions preserving exact residual variance and ICC.
+
+## IR Migration, Undo/Redo History, Bundles & Preview Caps
+
+* Added `migrate_spec_ir()` for forward-compatible schema upgrades (`1.0.0` -> `1.1.0`) with structured `migration_log` audit trails and crisp `specshiny_version_mismatch` errors, plus optional `auto_migrate = TRUE` in `read_spec_ir()` and `parse_spec_text()`.
+* Added `spec_history()` (`history_push()`, `history_undo()`, `history_redo()`, `history_can_undo()`, `history_can_redo()`, `history_current()`, `history_summary()`) wired directly into `mod_spec_controls_ui()` / `mod_spec_controls_server()` and `specshiny_demo_app()` so users can undo/redo both visual widget edits and conversational refinements.
+* Added `export_spec_bundle()` and `verify_spec_bundle()` writing path-safe, self-contained study archives (`spec.yaml`, `simulation.R`, `report.qmd`, `bundle_manifest.json` with SHA-256 digests and static AST safety attestation).
+* Added configurable preview-runner budgets (`max_preview_reps`, `max_preview_n`, `max_preview_seconds`) in `mod_spec_preview_server()` so large specs (e.g., `n_reps = 50000`) display clear guardrail warnings instead of freezing Shiny, while preserving global `.Random.seed`.
+
+## CRAN Readiness, Vignettes & Documentation
+
+* Expanded to 4 executable `knitr` vignettes (`getting-started`, `building-custom-apps`, `ir-schema-and-safety`, `multilevel-power-walkthrough`), runnable examples across every exported function, `inst/CITATION`, `inst/examples/`, `inst/guides/specshiny-guide.Rmd`, `inst/WORDLIST`, `cran-comments.md`, GitHub Actions CI/pkgdown workflows, and `_pkgdown.yml`.
+
 # specshiny 0.2.0
 
 ## Security Hardening

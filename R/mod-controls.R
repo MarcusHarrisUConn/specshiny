@@ -2,12 +2,16 @@
 #'
 #' Dynamically synthesizes and renders **only** the `bslib` controls needed for
 #' the active `spec_ir`, staying bidirectionally synchronized with both visual
-#' widget edits and conversational IR updates while displaying live visual diff
-#' badges and inline statistical guardrail alerts.
+#' widget edits and conversational IR updates while displaying undo/redo
+#' history buttons, live visual diff badges, and inline statistical guardrail
+#' alerts.
 #'
 #' @param id Module namespace ID.
 #' @return A `shiny.tagList` containing the dynamic controls panel.
 #' @export
+#' @examples
+#' ui <- mod_spec_controls_ui("controls")
+#' inherits(ui, "shiny.tag.list")
 mod_spec_controls_ui <- function(id) {
   ns <- shiny::NS(id)
   htmltools::tagList(
@@ -22,34 +26,72 @@ mod_spec_controls_ui <- function(id) {
 #' Dynamic Specification Controls Shiny Module (Server)
 #'
 #' Maintains loop-free bidirectional synchronization between `spec_rv` and the
-#' dynamically synthesized UI widgets. Structural IR changes re-synthesize the
-#' active control layout; value-only IR changes update active widgets in place;
-#' UI edits are validated through [patch_spec_from_control()] and rejected with
-#' inline diagnostic alerts if they violate statistical sanity guardrails.
+#' dynamically synthesized UI widgets, backed by a [spec_history()] undo/redo
+#' stack that tracks both visual widget edits and conversational updates.
+#' Structural IR changes re-synthesize the active control layout; value-only IR
+#' changes update active widgets in place; UI edits are validated through
+#' [patch_spec_from_control()] and rejected with inline diagnostic alerts if
+#' they violate statistical sanity guardrails.
 #'
 #' @param id Module namespace ID.
 #' @param spec_rv A `shiny::reactiveVal` holding the current validated `spec_ir`.
 #' @param last_diff_rv Optional `shiny::reactiveVal` holding the latest `spec_diff`.
+#' @param history Optional [spec_history()] object; created automatically from
+#'   the initial `spec_rv()` when `NULL`.
 #'
-#' @return A list of reactives: `descriptor`, `guardrail_error`, and `diff`.
+#' @return A list of reactives and accessors: `descriptor`, `guardrail_error`,
+#'   `diff`, `history`, `can_undo`, and `can_redo`.
 #' @export
-mod_spec_controls_server <- function(id, spec_rv, last_diff_rv = NULL) {
+#' @examples
+#' spec_rv <- shiny::reactiveVal(new_spec_ir())
+#' shiny::testServer(
+#'   mod_spec_controls_server,
+#'   args = list(spec_rv = spec_rv),
+#'   {
+#'     session$setInputs(n_obs = 300)
+#'     spec_rv()$hierarchy$n_obs
+#'   }
+#' )
+mod_spec_controls_server <- function(id, spec_rv, last_diff_rv = NULL, history = NULL) {
   shiny::moduleServer(id, function(input, output, session) {
     ns <- session$ns
     if (is.null(last_diff_rv)) {
       last_diff_rv <- shiny::reactiveVal(NULL)
     }
 
+    init_sp <- shiny::isolate(spec_rv())
+    if (is.null(history)) {
+      history <- spec_history(initial_spec = init_sp)
+    } else {
+      assert_spec_history(history)
+      if (!is.null(init_sp) && is.null(history_current(history))) {
+        history_push(history, init_sp, label = "Initial specification")
+      }
+    }
+
     guardrail_error_rv <- shiny::reactiveVal(NULL)
     structure_key_rv <- shiny::reactiveVal("")
     render_tick_rv <- shiny::reactiveVal(0L)
-    last_seen_spec_rv <- shiny::reactiveVal(shiny::isolate(spec_rv()))
+    history_tick_rv <- shiny::reactiveVal(0L)
+    last_seen_spec_rv <- shiny::reactiveVal(init_sp)
+    navigating_history_env <- new.env(parent = emptyenv())
+    navigating_history_env$active <- FALSE
     registered_ids <- new.env(parent = emptyenv())
 
     descriptor_r <- shiny::reactive({
       sp <- spec_rv()
       shiny::req(sp)
       spec_to_controls(sp)
+    })
+
+    can_undo_r <- shiny::reactive({
+      history_tick_rv()
+      history_can_undo(history)
+    })
+
+    can_redo_r <- shiny::reactive({
+      history_tick_rv()
+      history_can_redo(history)
     })
 
     # Register an observer once per unique control_id so UI -> IR works without leaks
@@ -65,14 +107,11 @@ mod_spec_controls_server <- function(id, spec_rv, last_diff_rv = NULL) {
         val <- input[[cid]]
         if (is.null(val)) return()
 
-        # Ignore controls that do not belong to the current spec descriptor
         cur_desc <- spec_to_controls(cur)
         if (!(cid %in% cur_desc$control_ids)) return()
 
         res <- patch_spec_from_control(cur, cid, val)
         if (!res$changed) {
-          # Idempotent fixed point: breaks IR -> UI -> IR echo loops automatically
-          # Also clear any stale guardrail error once input matches valid state
           if (res$validation$valid) {
             guardrail_error_rv(NULL)
           }
@@ -90,7 +129,6 @@ mod_spec_controls_server <- function(id, spec_rv, last_diff_rv = NULL) {
     }
 
     # Wire initial observers immediately if spec_rv is already populated
-    init_sp <- shiny::isolate(spec_rv())
     if (!is.null(init_sp)) {
       init_desc <- spec_to_controls(init_sp)
       for (cid in init_desc$control_ids) {
@@ -98,7 +136,7 @@ mod_spec_controls_server <- function(id, spec_rv, last_diff_rv = NULL) {
       }
     }
 
-    # IR -> UI synchronization observer
+    # IR -> UI synchronization observer (also records undo/redo snapshots)
     shiny::observeEvent(spec_rv(), {
       sp <- spec_rv()
       if (is.null(sp)) return()
@@ -107,9 +145,14 @@ mod_spec_controls_server <- function(id, spec_rv, last_diff_rv = NULL) {
         guardrail_error_rv(NULL)
       }
       last_seen_spec_rv(sp)
+
+      if (!isTRUE(navigating_history_env$active)) {
+        history_push(history, sp)
+        history_tick_rv(shiny::isolate(history_tick_rv()) + 1L)
+      }
+
       desc <- spec_to_controls(sp)
 
-      # Ensure every active control has an input observer wired
       for (cid in desc$control_ids) {
         register_control_observer(cid)
       }
@@ -119,7 +162,6 @@ mod_spec_controls_server <- function(id, spec_rv, last_diff_rv = NULL) {
         structure_key_rv(desc$structure_key)
         render_tick_rv(shiny::isolate(render_tick_rv()) + 1L)
       } else {
-        # Value-only change: push values in place without tearing down DOM
         for (sec in desc$sections) {
           for (ct in sec$controls) {
             push_widget_value(session, ct)
@@ -127,6 +169,30 @@ mod_spec_controls_server <- function(id, spec_rv, last_diff_rv = NULL) {
         }
       }
     }, ignoreNULL = TRUE)
+
+    # Undo button handler
+    shiny::observeEvent(input$undo_btn, {
+      res <- history_undo(history)
+      if (is.null(res)) return()
+      navigating_history_env$active <- TRUE
+      on.exit(navigating_history_env$active <- FALSE, add = TRUE)
+      guardrail_error_rv(NULL)
+      last_diff_rv(res$diff)
+      spec_rv(res$spec)
+      history_tick_rv(shiny::isolate(history_tick_rv()) + 1L)
+    })
+
+    # Redo button handler
+    shiny::observeEvent(input$redo_btn, {
+      res <- history_redo(history)
+      if (is.null(res)) return()
+      navigating_history_env$active <- TRUE
+      on.exit(navigating_history_env$active <- FALSE, add = TRUE)
+      guardrail_error_rv(NULL)
+      last_diff_rv(res$diff)
+      spec_rv(res$spec)
+      history_tick_rv(shiny::isolate(history_tick_rv()) + 1L)
+    })
 
     # Add a parameter grid axis via button
     shiny::observeEvent(input$add_grid_btn, {
@@ -150,12 +216,27 @@ mod_spec_controls_server <- function(id, spec_rv, last_diff_rv = NULL) {
 
     output$controls_header <- shiny::renderUI({
       desc <- descriptor_r()
+      u_ok <- can_undo_r()
+      r_ok <- can_redo_r()
       htmltools::tags$div(
-        class = "d-flex justify-content-between align-items-center mb-2",
+        class = "d-flex justify-content-between align-items-center flex-wrap gap-2 mb-2",
         htmltools::tags$h5(class = "mb-0", "Dynamic Design Controls"),
-        htmltools::tags$span(
-          class = "badge text-bg-dark",
-          sprintf("%d active control%s", desc$control_count, if (desc$control_count == 1L) "" else "s")
+        htmltools::tags$div(
+          class = "d-flex align-items-center gap-2",
+          shiny::actionButton(
+            inputId = ns("undo_btn"),
+            label = "Undo",
+            class = if (u_ok) "btn-outline-secondary btn-sm" else "btn-outline-secondary btn-sm disabled"
+          ),
+          shiny::actionButton(
+            inputId = ns("redo_btn"),
+            label = "Redo",
+            class = if (r_ok) "btn-outline-secondary btn-sm" else "btn-outline-secondary btn-sm disabled"
+          ),
+          htmltools::tags$span(
+            class = "badge text-bg-dark",
+            sprintf("%d active control%s", desc$control_count, if (desc$control_count == 1L) "" else "s")
+          )
         )
       )
     })
@@ -181,7 +262,6 @@ mod_spec_controls_server <- function(id, spec_rv, last_diff_rv = NULL) {
     })
 
     output$dynamic_controls <- shiny::renderUI({
-      # Re-render on structural changes (render_tick_rv)
       render_tick_rv()
       sp <- shiny::isolate(spec_rv())
       shiny::req(sp)
@@ -220,7 +300,10 @@ mod_spec_controls_server <- function(id, spec_rv, last_diff_rv = NULL) {
     list(
       descriptor = descriptor_r,
       guardrail_error = guardrail_error_rv,
-      diff = last_diff_rv
+      diff = last_diff_rv,
+      history = history,
+      can_undo = can_undo_r,
+      can_redo = can_redo_r
     )
   })
 }

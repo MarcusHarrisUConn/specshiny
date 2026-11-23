@@ -14,6 +14,15 @@ spec_presets <- function() {
         "500 replications"
       )
     ),
+    cross_level_interaction = list(
+      label = "2-Level Cross-Level Interaction + Unbalanced Clusters + Heavy Tails",
+      prompt = paste(
+        "2-level power analysis for the cross-level interaction between x1 and z1 of 0.30",
+        "with 50 schools, 20 students per school, cluster size sd 5, ICC 0.2,",
+        "level-2 z1 effect 0.25, random slope for x1, t-distributed errors df 5,",
+        "300 replications"
+      )
+    ),
     single_level_lm = list(
       label = "Single-Level Linear Monte Carlo (Minimal UI)",
       prompt = paste(
@@ -44,8 +53,8 @@ spec_presets <- function() {
 #'
 #' Constructs a complete `bslib` Shiny application showcasing the full
 #' neuro-symbolic pipeline: Natural Language -> Validated `spec_ir` -> Dynamic
-#' Minimal Controls -> Bidirectional Sync & Visual Diffs -> Deterministic R &
-#' Quarto Compilation.
+#' Minimal Controls with Undo/Redo History -> Bidirectional Sync & Visual Diffs
+#' -> Deterministic AST-Verified R & Quarto Compilation.
 #'
 #' @param translator A `spec_translator` backend (defaults to [translator_rule()]).
 #' @param initial_prompt Optional initial prompt compiled on startup. Defaults
@@ -63,7 +72,7 @@ specshiny_demo_app <- function(translator = translator_rule(), initial_prompt = 
 
   ui <- bslib::page_sidebar(
     title = "specshiny: Neuro-Symbolic Statistical Study Designer",
-    theme = bslib::bs_theme(version = 5, bootswatch = "flatly"),
+    theme = bslib::bs_theme(version = 5, bootswatch = "flatly", primary = "#264653", secondary = "#6e7f8d"),
     sidebar = bslib::sidebar(
       width = 390,
       open = "desktop",
@@ -79,9 +88,10 @@ specshiny_demo_app <- function(translator = translator_rule(), initial_prompt = 
   server <- function(input, output, session) {
     spec_rv <- shiny::reactiveVal(init_translation$spec)
     last_diff_rv <- shiny::reactiveVal(NULL)
+    hist_stack <- spec_history(initial_spec = init_translation$spec)
 
     mod_spec_composer_server("composer", spec_rv = spec_rv, translator = translator, last_diff_rv = last_diff_rv)
-    mod_spec_controls_server("controls", spec_rv = spec_rv, last_diff_rv = last_diff_rv)
+    mod_spec_controls_server("controls", spec_rv = spec_rv, last_diff_rv = last_diff_rv, history = hist_stack)
     mod_spec_preview_server("preview", spec_rv = spec_rv, last_diff_rv = last_diff_rv)
   }
 
@@ -97,6 +107,12 @@ specshiny_demo_app <- function(translator = translator_rule(), initial_prompt = 
 #' @return Runs the Shiny application (invisibly returns the result of
 #'   [shiny::runApp()]).
 #' @export
+#' @examples
+#' \donttest{
+#' if (interactive()) {
+#'   run_specshiny_demo()
+#' }
+#' }
 run_specshiny_demo <- function(translator = translator_rule(),
                                launch.browser = interactive(),
                                ...) {

@@ -1,0 +1,8 @@
+bibentry(
+  bibtype  = "Manual",
+  title    = "specshiny: Neuro-Symbolic Specification Engine for Dynamic 'Shiny' UIs",
+  author   = person("Marcus", "Harris", email = "marcus.harris.uconn@gmail.com"),
+  year     = "2026",
+  note     = paste("R package version", meta$Version),
+  url      = "https://github.com/MarcusHarrisUConn/specshiny"
+)

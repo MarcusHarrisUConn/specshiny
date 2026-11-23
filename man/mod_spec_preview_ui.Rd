@@ -15,6 +15,10 @@ A \code{bslib::navset_card_tab()} UI component.
 \description{
 Displays a live multi-tab \code{bslib} inspector for a validated \code{spec_ir}:
 mathematical model summary, serialized YAML/JSON IR, deterministic standalone
-R script (with optional fast preview execution), and Quarto \code{.qmd} report,
-each with download handlers.
+R script (with bounded budget-capped preview execution), and Quarto \code{.qmd}
+report, each with download handlers.
+}
+\examples{
+ui <- mod_spec_preview_ui("preview")
+inherits(ui, "bslib_fragment") || inherits(ui, "shiny.tag")
 }

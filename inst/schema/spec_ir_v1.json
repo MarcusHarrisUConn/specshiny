@@ -1,7 +1,7 @@
 {
   "$schema": "https://json-schema.org/draft/2020-12/schema",
   "$id": "https://github.com/MarcusHarrisUConn/specshiny/schema/spec_ir_v1.json",
-  "title": "specshiny Statistical & Simulation Specification IR v1.0.0",
+  "title": "specshiny Statistical & Simulation Specification IR v1.1.0",
   "type": "object",
   "required": [
     "schema_version",
@@ -20,7 +20,7 @@
   "properties": {
     "schema_version": {
       "type": "string",
-      "const": "1.0.0"
+      "enum": ["1.0.0", "1.1.0"]
     },
     "metadata": {
       "type": "object",
@@ -49,6 +49,8 @@
         "n_obs": { "type": ["integer", "null"], "minimum": 5 },
         "n_clusters": { "type": ["integer", "null"], "minimum": 3 },
         "cluster_size": { "type": ["integer", "null"], "minimum": 2 },
+        "cluster_size_dist": { "type": ["string", "null"], "enum": ["fixed", "normal", "poisson", null] },
+        "cluster_size_sd": { "type": ["number", "null"], "exclusiveMinimum": 0 },
         "cluster_name": { "type": ["string", "null"], "pattern": "^[A-Za-z][A-Za-z0-9_]*$", "maxLength": 64 },
         "unit_name": { "type": "string", "pattern": "^[A-Za-z][A-Za-z0-9_]*$", "maxLength": 64 },
         "icc": { "type": ["number", "null"], "minimum": 0, "exclusiveMaximum": 1 }
@@ -90,7 +92,10 @@
         "name": { "type": "string", "pattern": "^[A-Za-z][A-Za-z0-9_]*$", "maxLength": 64 },
         "family": { "type": "string", "enum": ["gaussian", "binomial", "poisson"] },
         "link": { "type": "string", "enum": ["identity", "logit", "probit", "log"] },
-        "residual_sd": { "type": ["number", "null"], "exclusiveMinimum": 0 }
+        "residual_sd": { "type": ["number", "null"], "exclusiveMinimum": 0 },
+        "error_dist": { "type": ["string", "null"], "enum": ["normal", "t", "skewed", null] },
+        "error_df": { "type": ["number", "null"], "exclusiveMinimum": 2 },
+        "error_skew": { "type": ["number", "null"], "minimum": -4, "maximum": 4 }
       }
     },
     "effects": {
@@ -102,6 +107,23 @@
         "fixed": {
           "type": "object",
           "additionalProperties": { "type": "number" }
+        },
+        "interactions": {
+          "type": "array",
+          "items": {
+            "type": "object",
+            "required": ["terms", "beta"],
+            "additionalProperties": false,
+            "properties": {
+              "terms": {
+                "type": "array",
+                "minItems": 2,
+                "maxItems": 2,
+                "items": { "type": "string", "pattern": "^[A-Za-z][A-Za-z0-9_]*$", "maxLength": 64 }
+              },
+              "beta": { "type": "number" }
+            }
+          }
         },
         "focal_predictor": { "type": ["string", "null"] },
         "random": {

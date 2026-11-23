@@ -1,5 +1,6 @@
-# Current IR schema version
-SPEC_SCHEMA_VERSION <- "1.0.0"
+# Current IR schema version and supported versions
+SPEC_SCHEMA_VERSION <- "1.1.0"
+SPEC_SUPPORTED_SCHEMA_VERSIONS <- c("1.0.0", "1.1.0")
 
 #' Supported specification design types
 #'
@@ -82,6 +83,26 @@ spec_predictor <- function(name,
   }
 
   out
+}
+
+#' Construct a two-way interaction term specification
+#'
+#' Helper constructor for defining an interaction (including cross-level
+#' interactions such as `x1:z1`) inside `effects$interactions` of [new_spec_ir()].
+#'
+#' @param term1 Character scalar naming the first predictor.
+#' @param term2 Character scalar naming the second predictor.
+#' @param beta Numeric scalar true interaction coefficient.
+#'
+#' @return A named list with elements `terms` (length-2 character vector) and `beta`.
+#' @export
+#' @examples
+#' spec_interaction("x1", "z1", beta = 0.25)
+spec_interaction <- function(term1, term2, beta = 0.2) {
+  list(
+    terms = c(as.character(term1), as.character(term2)),
+    beta = as.numeric(beta)
+  )
 }
 
 #' Construct a typed `spec_ir` statistical and simulation specification
@@ -198,11 +219,24 @@ new_spec_ir <- function(design_type = "monte_carlo_lm",
     } else {
       hierarchy$icc
     }
+    cs_dist <- hierarchy$cluster_size_dist %||% "fixed"
+    cs_sd <- if (identical(cs_dist, "normal")) {
+      if (is.null(hierarchy$cluster_size_sd)) {
+        add_rationale("hierarchy.cluster_size_sd", "Defaulted unbalanced cluster-size SD to 25% of mean cluster size.")
+        max(1, round(0.25 * as.numeric(cluster_size), 2))
+      } else {
+        hierarchy$cluster_size_sd
+      }
+    } else {
+      hierarchy$cluster_size_sd
+    }
     hier_obj <- list(
       levels = levels_val,
       n_obs = NULL,
       n_clusters = n_clusters,
       cluster_size = cluster_size,
+      cluster_size_dist = cs_dist,
+      cluster_size_sd = cs_sd,
       cluster_name = cluster_name,
       unit_name = unit_name,
       icc = icc
@@ -220,6 +254,8 @@ new_spec_ir <- function(design_type = "monte_carlo_lm",
       n_obs = n_obs,
       n_clusters = NULL,
       cluster_size = NULL,
+      cluster_size_dist = NULL,
+      cluster_size_sd = NULL,
       cluster_name = NULL,
       unit_name = unit_name,
       icc = hierarchy$icc
@@ -258,11 +294,39 @@ new_spec_ir <- function(design_type = "monte_carlo_lm",
   } else {
     outcome$residual_sd
   }
+  out_err_dist <- if (identical(out_family, "gaussian")) {
+    outcome$error_dist %||% "normal"
+  } else {
+    outcome$error_dist
+  }
+  out_err_df <- if (identical(out_family, "gaussian") && identical(out_err_dist, "t")) {
+    if (is.null(outcome$error_df)) {
+      add_rationale("outcome.error_df", "Defaulted Student-t error degrees of freedom to 5 (moderate heavy tails with finite variance).")
+      5
+    } else {
+      outcome$error_df
+    }
+  } else {
+    outcome$error_df
+  }
+  out_err_skew <- if (identical(out_family, "gaussian") && identical(out_err_dist, "skewed")) {
+    if (is.null(outcome$error_skew)) {
+      add_rationale("outcome.error_skew", "Defaulted skewed error skewness to 1.5 (moderately right-skewed standardized gamma errors).")
+      1.5
+    } else {
+      outcome$error_skew
+    }
+  } else {
+    outcome$error_skew
+  }
   outcome_obj <- list(
     name = out_name,
     family = out_family,
     link = out_link,
-    residual_sd = out_resid_sd
+    residual_sd = out_resid_sd,
+    error_dist = out_err_dist,
+    error_df = out_err_df,
+    error_skew = out_err_skew
   )
 
   # Effects defaults
@@ -311,9 +375,12 @@ new_spec_ir <- function(design_type = "monte_carlo_lm",
     )
   }
 
+  interactions_obj <- normalize_interactions(effects$interactions %||% list())
+
   effects_obj <- list(
     intercept = intercept_val,
     fixed = fixed_obj,
+    interactions = interactions_obj,
     focal_predictor = focal_pred,
     random = list(
       intercept = rand_intercept,
@@ -441,6 +508,9 @@ new_spec_ir <- function(design_type = "monte_carlo_lm",
 #' @param x Object to test.
 #' @return Logical scalar.
 #' @export
+#' @examples
+#' is_spec_ir(new_spec_ir())
+#' is_spec_ir(list())
 is_spec_ir <- function(x) {
   inherits(x, "spec_ir")
 }
@@ -456,6 +526,10 @@ is_spec_ir <- function(x) {
 #'
 #' @return A `spec_ir` object.
 #' @export
+#' @examples
+#' raw_list <- unclass(new_spec_ir())
+#' spec <- as_spec_ir(raw_list)
+#' is_spec_ir(spec)
 as_spec_ir <- function(x, validate = TRUE) {
   if (!is.list(x)) {
     cli::cli_abort("Cannot coerce object of class {.cls {class(x)}} to {.cls spec_ir}.")
@@ -591,6 +665,29 @@ normalize_slopes <- function(slopes) {
   })
 }
 
+normalize_interactions <- function(interactions) {
+  if (is.null(interactions) || length(interactions) == 0L) {
+    return(list())
+  }
+  if (is.data.frame(interactions)) {
+    return(lapply(seq_len(nrow(interactions)), function(i) {
+      list(
+        terms = as.character(unlist(interactions$terms[[i]], use.names = FALSE)),
+        beta = interactions$beta[[i]]
+      )
+    }))
+  }
+  lapply(unname(as.list(interactions)), function(it) {
+    if (!is.list(it)) return(it)
+    t_raw <- it$terms
+    terms_v <- if (is.list(t_raw)) as.character(unlist(t_raw, use.names = FALSE)) else as.character(t_raw)
+    out <- list(terms = terms_v, beta = it$beta)
+    extra <- setdiff(names(it), names(out))
+    for (ek in extra) out[[ek]] <- it[[ek]]
+    out
+  })
+}
+
 normalize_corr_matrix <- function(m) {
   if (is.null(m)) return(NULL)
   if (is.matrix(m)) {
@@ -666,6 +763,11 @@ normalize_spec_ir <- function(x) {
   if (is.list(out$effects)) {
     if (is.numeric(out$effects$fixed) && !is.null(names(out$effects$fixed))) {
       out$effects$fixed <- as.list(out$effects$fixed)
+    }
+    if ("interactions" %in% names(out$effects)) {
+      out$effects$interactions <- normalize_interactions(out$effects$interactions)
+    } else {
+      out$effects$interactions <- list()
     }
     if (is.list(out$effects$random)) {
       out$effects$random$slopes <- normalize_slopes(out$effects$random$slopes)

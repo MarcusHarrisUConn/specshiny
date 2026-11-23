@@ -120,6 +120,36 @@ shiny::testServer(
     session$setInputs(missing_mechanism = "none")
     cat("Missingness rate control still present?",
         "missing_rate" %in% session$returned$descriptor()$control_ids, "\n")
+
+    # 4. Undo reverts missingness back to MAR cleanly
+    session$setInputs(undo_btn = 1)
+    cat("After Undo -> missingness mechanism:", spec_rv()$missingness$mechanism, "\n")
+  }
+)
+```
+
+## 3b. Interactive Preview Budget Guardrails
+
+`mod_spec_preview_server()` enforces configurable iteration, sample-size, and
+wall-clock caps (`max_preview_reps`, `max_preview_n`, `max_preview_seconds`)
+so large simulation designs (e.g., `n_reps = 50000`) never freeze the Shiny
+event loop while preserving the full specification in downloaded `.R` scripts:
+
+```{r}
+large_spec <- new_spec_ir(
+  design_type = "monte_carlo_lm",
+  hierarchy = list(levels = 1L, n_obs = 5000L),
+  simulation = list(n_reps = 50000L, seed = 2026L)
+)
+large_rv <- shiny::reactiveVal(large_spec)
+
+shiny::testServer(
+  mod_spec_preview_server,
+  args = list(spec_rv = large_rv, max_preview_reps = 5L, max_preview_n = 500L),
+  {
+    session$setInputs(run_preview = 1)
+    print(session$returned$preview_results())
+    cat("Warnings:", paste(session$returned$preview_warnings(), collapse = " | "), "\n")
   }
 )
 ```

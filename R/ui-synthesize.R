@@ -73,10 +73,18 @@ spec_to_controls <- function(spec) {
       make_ctrl(
         id = "cluster_size",
         path = "hierarchy.cluster_size",
-        label = sprintf("%ss per %s (n_j)", tools::toTitleCase(spec$hierarchy$unit_name), spec$hierarchy$cluster_name),
+        label = sprintf("%ss per %s (mean n_j)", tools::toTitleCase(spec$hierarchy$unit_name), spec$hierarchy$cluster_name),
         type = "numeric",
         value = as.integer(spec$hierarchy$cluster_size),
         min = 2L, max = 500L, step = 1L
+      ),
+      make_ctrl(
+        id = "cluster_size_dist",
+        path = "hierarchy.cluster_size_dist",
+        label = "Cluster Size Distribution",
+        type = "select",
+        value = spec$hierarchy$cluster_size_dist %||% "fixed",
+        choices = c("fixed", "normal", "poisson")
       ),
       make_ctrl(
         id = "icc",
@@ -87,7 +95,17 @@ spec_to_controls <- function(spec) {
         min = 0, max = 0.90, step = 0.01
       )
     )
-    hier_sub <- sprintf("2-level nested structure (total N = %d)", spec_total_n(spec))
+    if (identical(spec$hierarchy$cluster_size_dist %||% "fixed", "normal")) {
+      hier_ctrls[[length(hier_ctrls) + 1L]] <- make_ctrl(
+        id = "cluster_size_sd",
+        path = "hierarchy.cluster_size_sd",
+        label = "Cluster Size SD (unbalanced)",
+        type = "numeric",
+        value = as.numeric(spec$hierarchy$cluster_size_sd),
+        min = 0.5, max = 200, step = 0.5
+      )
+    }
+    hier_sub <- sprintf("2-level nested structure (expected N = %d)", spec_total_n(spec))
   }
   sections$hierarchy <- list(
     id = "hierarchy",
@@ -132,6 +150,34 @@ spec_to_controls <- function(spec) {
       value = as.numeric(spec$outcome$residual_sd),
       min = 0.05, max = 100, step = 0.1
     )
+    edist <- spec$outcome$error_dist %||% "normal"
+    out_ctrls[[length(out_ctrls) + 1L]] <- make_ctrl(
+      id = "error_dist",
+      path = "outcome.error_dist",
+      label = "Level-1 Error Distribution",
+      type = "select",
+      value = edist,
+      choices = c("normal", "t", "skewed")
+    )
+    if (identical(edist, "t")) {
+      out_ctrls[[length(out_ctrls) + 1L]] <- make_ctrl(
+        id = "error_df",
+        path = "outcome.error_df",
+        label = "Student-t Error Degrees of Freedom (df > 2)",
+        type = "numeric",
+        value = as.numeric(spec$outcome$error_df),
+        min = 2.5, max = 100, step = 0.5
+      )
+    } else if (identical(edist, "skewed")) {
+      out_ctrls[[length(out_ctrls) + 1L]] <- make_ctrl(
+        id = "error_skew",
+        path = "outcome.error_skew",
+        label = "Error Skewness (gamma_1)",
+        type = "slider",
+        value = as.numeric(spec$outcome$error_skew),
+        min = -3.5, max = 3.5, step = 0.1
+      )
+    }
   }
   sections$outcome <- list(
     id = "outcome",
@@ -231,7 +277,11 @@ spec_to_controls <- function(spec) {
     controls = pred_ctrls
   )
 
-  # 4. Effects (Intercept, Focal Target, and Random Effects ONLY if 2-level)
+  # 4. Effects (Intercept, Interactions, Focal Target, and Random Effects ONLY if 2-level)
+  inters <- spec$effects$interactions %||% list()
+  inter_names <- vapply(inters, function(it) paste(canonical_interaction_terms(it$terms, pred_names), collapse = ":"), character(1))
+  focal_choices <- c(pred_names, inter_names)
+
   eff_ctrls <- list(
     make_ctrl(
       id = "effects_intercept",
@@ -242,14 +292,26 @@ spec_to_controls <- function(spec) {
       min = -50, max = 50, step = 0.1
     )
   )
-  if (length(pred_names) > 1L) {
+  if (length(focal_choices) > 1L) {
     eff_ctrls[[length(eff_ctrls) + 1L]] <- make_ctrl(
       id = "focal_predictor",
       path = "effects.focal_predictor",
-      label = "Focal Predictor (Power/Bias Target)",
+      label = "Focal Term (Power/Bias Target)",
       type = "select",
       value = spec$effects$focal_predictor %||% pred_names[[1L]],
-      choices = pred_names
+      choices = focal_choices
+    )
+  }
+  for (it in inters) {
+    ct <- canonical_interaction_terms(it$terms, pred_names)
+    iname <- paste(ct, collapse = ":")
+    eff_ctrls[[length(eff_ctrls) + 1L]] <- make_ctrl(
+      id = paste0("inter_beta_", ct[[1L]], "__", ct[[2L]]),
+      path = paste0("effects.interactions.", iname, ".beta"),
+      label = sprintf("Interaction effect (%s)", iname),
+      type = "numeric",
+      value = as.numeric(it$beta),
+      min = -10, max = 10, step = 0.05
     )
   }
 
@@ -484,6 +546,18 @@ patch_spec_from_control <- function(spec, control_id, value) {
     s$hierarchy$n_clusters <- maybe_int(suppressWarnings(as.numeric(value)))
   } else if (control_id == "cluster_size") {
     s$hierarchy$cluster_size <- maybe_int(suppressWarnings(as.numeric(value)))
+  } else if (control_id == "cluster_size_dist") {
+    csd <- as.character(value)
+    s$hierarchy$cluster_size_dist <- csd
+    if (identical(csd, "normal")) {
+      if (is.null(s$hierarchy$cluster_size_sd)) {
+        s$hierarchy$cluster_size_sd <- max(1, round(0.25 * as.numeric(s$hierarchy$cluster_size %||% 20), 2))
+      }
+    } else {
+      s$hierarchy$cluster_size_sd <- NULL
+    }
+  } else if (control_id == "cluster_size_sd") {
+    s$hierarchy$cluster_size_sd <- suppressWarnings(as.numeric(value))
   } else if (control_id == "icc") {
     s$hierarchy$icc <- suppressWarnings(as.numeric(value))
     s$effects$random$intercept_sd <- NULL
@@ -493,8 +567,12 @@ patch_spec_from_control <- function(spec, control_id, value) {
     s$outcome$link <- switch(fam, gaussian = "identity", binomial = "logit", poisson = "log", s$outcome$link)
     if (fam == "gaussian") {
       if (is.null(s$outcome$residual_sd)) s$outcome$residual_sd <- 1.0
+      if (is.null(s$outcome$error_dist)) s$outcome$error_dist <- "normal"
     } else {
       s$outcome$residual_sd <- NULL
+      s$outcome$error_dist <- NULL
+      s$outcome$error_df <- NULL
+      s$outcome$error_skew <- NULL
       s$simulation$parameter_grid$residual_sd <- NULL
     }
     q_r <- as.integer(isTRUE(s$effects$random$intercept)) + length(s$effects$random$slopes)
@@ -503,6 +581,23 @@ patch_spec_from_control <- function(spec, control_id, value) {
     s$outcome$link <- as.character(value)
   } else if (control_id == "residual_sd") {
     s$outcome$residual_sd <- suppressWarnings(as.numeric(value))
+  } else if (control_id == "error_dist") {
+    ed <- as.character(value)
+    s$outcome$error_dist <- ed
+    if (identical(ed, "t")) {
+      if (is.null(s$outcome$error_df)) s$outcome$error_df <- 5
+      s$outcome$error_skew <- NULL
+    } else if (identical(ed, "skewed")) {
+      if (is.null(s$outcome$error_skew)) s$outcome$error_skew <- 1.5
+      s$outcome$error_df <- NULL
+    } else {
+      s$outcome$error_df <- NULL
+      s$outcome$error_skew <- NULL
+    }
+  } else if (control_id == "error_df") {
+    s$outcome$error_df <- suppressWarnings(as.numeric(value))
+  } else if (control_id == "error_skew") {
+    s$outcome$error_skew <- suppressWarnings(as.numeric(value))
   } else if (control_id == "effects_intercept") {
     s$effects$intercept <- suppressWarnings(as.numeric(value))
   } else if (control_id == "focal_predictor") {
@@ -556,6 +651,19 @@ patch_spec_from_control <- function(spec, control_id, value) {
       if (identical(s$predictors[[i]]$name, pn)) {
         s$predictors[[i]][[field]] <- if (field == "centering") as.character(value) else suppressWarnings(as.numeric(value))
       }
+    }
+  } else if (grepl("^inter_beta_", control_id)) {
+    pair_str <- sub("^inter_beta_", "", control_id)
+    parts <- strsplit(pair_str, "__", fixed = TRUE)[[1L]]
+    if (length(parts) == 2L) {
+      inters <- s$effects$interactions %||% list()
+      for (i in seq_along(inters)) {
+        t_sorted <- sort(inters[[i]]$terms)
+        if (identical(t_sorted, sort(parts))) {
+          inters[[i]]$beta <- suppressWarnings(as.numeric(value))
+        }
+      }
+      s$effects$interactions <- inters
     }
   } else if (grepl("^slope_sd_", control_id)) {
     pn <- sub("^slope_sd_", "", control_id)
@@ -621,6 +729,10 @@ patch_spec_from_control <- function(spec, control_id, value) {
 #'
 #' @return An `htmltools::tagList` of `bslib::card()` elements.
 #' @export
+#' @examples
+#' desc <- spec_to_controls(new_spec_ir())
+#' ui_cards <- render_spec_controls_ui(desc)
+#' inherits(ui_cards, "shiny.tag.list")
 render_spec_controls_ui <- function(descriptor, ns = identity, diff = NULL) {
   if (!inherits(descriptor, "spec_ui_descriptor")) {
     cli::cli_abort("{.arg descriptor} must be a {.cls spec_ui_descriptor}.")
@@ -704,6 +816,11 @@ render_spec_controls_ui <- function(descriptor, ns = identity, diff = NULL) {
 #' @param diff A `spec_diff` object (or `NULL`).
 #' @return An `htmltools` tag representing the live change diff banner.
 #' @export
+#' @examples
+#' s1 <- new_spec_ir(hierarchy = list(levels = 1L, n_obs = 100L))
+#' s2 <- new_spec_ir(hierarchy = list(levels = 1L, n_obs = 200L))
+#' tag <- render_diff_badges_ui(diff_spec_ir(s1, s2))
+#' inherits(tag, "shiny.tag")
 render_diff_badges_ui <- function(diff) {
   if (!inherits(diff, "spec_diff") || !diff$has_changes) {
     return(

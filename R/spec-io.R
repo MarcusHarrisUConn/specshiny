@@ -48,6 +48,8 @@ as_spec_json <- function(spec, pretty = TRUE) {
 #' @param text Character scalar containing YAML or JSON text.
 #' @param format One of `"yaml"` or `"json"`.
 #' @param validate Logical; if `TRUE` (default), validates the parsed IR.
+#' @param auto_migrate Logical; if `TRUE`, automatically migrates legacy IR
+#'   versions via [migrate_spec_ir()]. Defaults to `FALSE`.
 #'
 #' @return A `spec_ir` object.
 #' @export
@@ -55,7 +57,7 @@ as_spec_json <- function(spec, pretty = TRUE) {
 #' spec <- new_spec_ir()
 #' txt <- as_spec_yaml(spec)
 #' spec2 <- parse_spec_text(txt, format = "yaml")
-parse_spec_text <- function(text, format = c("yaml", "json"), validate = TRUE) {
+parse_spec_text <- function(text, format = c("yaml", "json"), validate = TRUE, auto_migrate = FALSE) {
   format <- match.arg(format)
   if (!is_chr_scalar(text) || !nzchar(trimws(text))) {
     cli::cli_abort("{.arg text} must be a non-empty character scalar.")
@@ -69,6 +71,12 @@ parse_spec_text <- function(text, format = c("yaml", "json"), validate = TRUE) {
       cli::cli_abort("JSON specification exceeds maximum allowed size (1 MB).", class = "specshiny_security_error")
     }
     jsonlite::fromJSON(text, simplifyVector = FALSE)
+  }
+
+  if (isTRUE(auto_migrate) && is.list(raw_obj) &&
+      is_chr_scalar(raw_obj$schema_version) &&
+      !identical(raw_obj$schema_version, SPEC_SCHEMA_VERSION)) {
+    return(migrate_spec_ir(raw_obj, target_version = SPEC_SCHEMA_VERSION, validate = validate))
   }
 
   as_spec_ir(raw_obj, validate = validate)
@@ -105,6 +113,8 @@ write_spec_ir <- function(spec, path, format = NULL, validate = TRUE) {
 #' @param format Optional format (`"yaml"` or `"json"`). Inferred from `path`
 #'   extension when `NULL`.
 #' @param validate Logical; if `TRUE` (default), validates the loaded IR.
+#' @param auto_migrate Logical; if `TRUE`, automatically migrates legacy IR
+#'   versions via [migrate_spec_ir()]. Defaults to `FALSE`.
 #'
 #' @return A `spec_ir` object.
 #' @export
@@ -114,13 +124,13 @@ write_spec_ir <- function(spec, path, format = NULL, validate = TRUE) {
 #' write_spec_ir(spec, tmp)
 #' spec2 <- read_spec_ir(tmp)
 #' unlink(tmp)
-read_spec_ir <- function(path, format = NULL, validate = TRUE) {
+read_spec_ir <- function(path, format = NULL, validate = TRUE, auto_migrate = FALSE) {
   if (!is.character(path) || length(path) != 1L || !file.exists(path)) {
     cli::cli_abort("Specification file not found: {.path {path}}.")
   }
   fmt <- resolve_spec_format(path, format)
   txt <- paste(readLines(path, warn = FALSE, encoding = "UTF-8"), collapse = "\n")
-  parse_spec_text(txt, format = fmt, validate = validate)
+  parse_spec_text(txt, format = fmt, validate = validate, auto_migrate = auto_migrate)
 }
 
 resolve_spec_format <- function(path, format = NULL) {
@@ -171,6 +181,10 @@ spec_to_serializable <- function(spec, target = c("yaml", "json")) {
       if (length(x$effects$fixed) == 0L) {
         x$effects$fixed <- structure(list(), names = character())
       }
+      x$effects$interactions <- I(lapply(unname(x$effects$interactions %||% list()), function(it) {
+        it$terms <- I(as.character(it$terms))
+        it
+      }))
       if (is.list(x$effects$random)) {
         x$effects$random$slopes <- I(unname(x$effects$random$slopes %||% list()))
       }

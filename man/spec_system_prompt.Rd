@@ -15,3 +15,6 @@ Character scalar system prompt.
 \description{
 Return the strict JSON system prompt used by LLM translator backends
 }
+\examples{
+substr(spec_system_prompt("create"), 1, 120)
+}

@@ -13,10 +13,11 @@ SPEC_ALLOWED_KEYS <- list(
     "simulation", "defaults_rationale"
   ),
   metadata = c("title", "description", "source_prompt", "tags"),
-  hierarchy = c("levels", "n_obs", "n_clusters", "cluster_size", "cluster_name", "unit_name", "icc"),
+  hierarchy = c("levels", "n_obs", "n_clusters", "cluster_size", "cluster_size_dist", "cluster_size_sd", "cluster_name", "unit_name", "icc"),
   predictor = c("name", "level", "distribution", "mean", "sd", "prob", "min", "max", "centering", "role"),
-  outcome = c("name", "family", "link", "residual_sd"),
-  effects = c("intercept", "fixed", "focal_predictor", "random"),
+  outcome = c("name", "family", "link", "residual_sd", "error_dist", "error_df", "error_skew"),
+  effects = c("intercept", "fixed", "interactions", "focal_predictor", "random"),
+  interaction = c("terms", "beta"),
   random = c("intercept", "intercept_sd", "slopes", "corr_matrix"),
   slope = c("predictor", "sd"),
   missingness = c("mechanism", "rate", "target", "auxiliary", "strength"),
@@ -184,9 +185,23 @@ validate_spec_ir <- function(spec, strict = FALSE) {
   }
 
   # 2. Schema version & metadata
-  if (!is_chr_scalar(spec$schema_version) || !identical(spec$schema_version, SPEC_SCHEMA_VERSION)) {
-    add_err("schema_version", "unsupported_schema_version", "schema",
-            sprintf("schema_version must be '%s'.", SPEC_SCHEMA_VERSION))
+  if (!is_chr_scalar(spec$schema_version) || !(spec$schema_version %in% SPEC_SUPPORTED_SCHEMA_VERSIONS)) {
+    ver_hint <- if (is_chr_scalar(spec$schema_version) && grepl("^\\d+\\.\\d+\\.\\d+$", spec$schema_version)) {
+      if (utils::compareVersion(spec$schema_version, SPEC_SCHEMA_VERSION) > 0L) {
+        sprintf("schema_version '%s' is newer than supported '%s'; upgrade specshiny.", spec$schema_version, SPEC_SCHEMA_VERSION)
+      } else {
+        sprintf("schema_version '%s' is unsupported; supported versions: %s.", spec$schema_version, paste(SPEC_SUPPORTED_SCHEMA_VERSIONS, collapse = ", "))
+      }
+    } else {
+      sprintf("schema_version must be one of: %s.", paste(SPEC_SUPPORTED_SCHEMA_VERSIONS, collapse = ", "))
+    }
+    add_err("schema_version", "unsupported_schema_version", "schema", ver_hint)
+  } else if (!identical(spec$schema_version, SPEC_SCHEMA_VERSION)) {
+    add_warn(
+      "schema_version", "schema_outdated", "schema",
+      sprintf("Spec uses legacy schema_version '%s'; call migrate_spec_ir() to upgrade to '%s'.",
+              spec$schema_version, SPEC_SCHEMA_VERSION)
+    )
   }
 
   if (!is.list(spec$metadata)) {
@@ -262,6 +277,14 @@ validate_spec_ir <- function(spec, strict = FALSE) {
         add_err("hierarchy.icc", "icc_in_single_level", "statistical",
                 "1-level design cannot specify a non-zero hierarchy$icc.")
       }
+      if (!is.null(h$cluster_size_dist) && !identical(h$cluster_size_dist, "fixed")) {
+        add_err("hierarchy.cluster_size_dist", "unbalanced_in_single_level", "statistical",
+                "1-level design cannot specify unbalanced cluster_size_dist.")
+      }
+      if (!is.null(h$cluster_size_sd)) {
+        add_err("hierarchy.cluster_size_sd", "unbalanced_in_single_level", "statistical",
+                "1-level design cannot specify hierarchy$cluster_size_sd.")
+      }
     } else if (identical(levels_val, 2L)) {
       if (!is_whole_scalar(h$n_clusters) || as.integer(h$n_clusters) < 3L) {
         add_err("hierarchy.n_clusters", "invalid_n_clusters", "statistical",
@@ -274,6 +297,22 @@ validate_spec_ir <- function(spec, strict = FALSE) {
                 "2-level design requires integer hierarchy$cluster_size >= 2.")
       } else {
         cluster_size_val <- as.integer(h$cluster_size)
+      }
+      cs_dist <- h$cluster_size_dist %||% "fixed"
+      if (!is_chr_scalar(cs_dist) || !(cs_dist %in% c("fixed", "normal", "poisson"))) {
+        add_err("hierarchy.cluster_size_dist", "invalid_cluster_size_dist", "schema",
+                "hierarchy$cluster_size_dist must be 'fixed', 'normal', or 'poisson'.")
+      } else if (cs_dist == "normal") {
+        if (!is_num_scalar(h$cluster_size_sd) || h$cluster_size_sd <= 0) {
+          add_err("hierarchy.cluster_size_sd", "invalid_cluster_size_sd", "statistical",
+                  "Unbalanced 'normal' cluster sizes require finite hierarchy$cluster_size_sd > 0.")
+        } else if (!is.na(cluster_size_val) && h$cluster_size_sd >= 5 * cluster_size_val) {
+          add_err("hierarchy.cluster_size_sd", "cluster_size_sd_excessive", "statistical",
+                  "hierarchy$cluster_size_sd must be < 5 * cluster_size for realistic cluster sizes.")
+        }
+      } else if (!is.null(h$cluster_size_sd)) {
+        add_err("hierarchy.cluster_size_sd", "unused_cluster_size_sd", "statistical",
+                sprintf("hierarchy$cluster_size_sd must be NULL when cluster_size_dist is '%s'.", cs_dist))
       }
       if (!is_valid_r_ident(h$cluster_name)) {
         add_err("hierarchy.cluster_name", "invalid_identifier", "schema",
@@ -444,6 +483,26 @@ validate_spec_ir <- function(spec, strict = FALSE) {
           add_err("outcome.residual_sd", "non_positive_residual_sd", "statistical",
                   "Gaussian outcome requires finite outcome$residual_sd > 0.")
         }
+        edist <- o$error_dist %||% "normal"
+        if (!is_chr_scalar(edist) || !(edist %in% c("normal", "t", "skewed"))) {
+          add_err("outcome.error_dist", "invalid_error_dist", "schema",
+                  "Gaussian outcome$error_dist must be 'normal', 't', or 'skewed'.")
+        } else if (edist == "t") {
+          if (!is_num_scalar(o$error_df) || o$error_df <= 2 || o$error_df > 1000) {
+            add_err("outcome.error_df", "invalid_error_df", "statistical",
+                    "Student-t errors require finite outcome$error_df in (2, 1000] so variance is finite.")
+          }
+        } else if (edist == "skewed") {
+          if (!is_num_scalar(o$error_skew) || o$error_skew == 0 || abs(o$error_skew) > 4) {
+            add_err("outcome.error_skew", "invalid_error_skew", "statistical",
+                    "Skewed errors require non-zero finite outcome$error_skew in [-4, 4].")
+          }
+        }
+      } else {
+        if (!is.null(o$error_dist) && !identical(o$error_dist, "normal")) {
+          add_err("outcome.error_dist", "error_dist_non_gaussian", "statistical",
+                  sprintf("outcome$error_dist applies only to Gaussian outcomes, not '%s'.", out_family))
+        }
       }
     }
   }
@@ -479,10 +538,55 @@ validate_spec_ir <- function(spec, strict = FALSE) {
       }
     }
 
+    # Interactions validation
+    inter_names <- character()
+    inters <- ef$interactions %||% list()
+    if (!is.list(inters)) {
+      add_err("effects.interactions", "invalid_interactions", "schema",
+              "effects$interactions must be a list of interaction specifications.")
+    } else if (length(inters) > 0L) {
+      seen_pairs <- character()
+      for (k in seq_along(inters)) {
+        it <- inters[[k]]
+        i_path <- sprintf("effects.interactions[%d]", k)
+        if (!is.list(it)) {
+          add_err(i_path, "invalid_interaction_entry", "schema",
+                  "Each interaction must be a named list with 'terms' and 'beta'.")
+          next
+        }
+        check_extra_keys(it, SPEC_ALLOWED_KEYS$interaction, i_path)
+        tvec <- it$terms
+        if (!is.character(tvec) || length(tvec) != 2L || any(is.na(tvec))) {
+          add_err(paste0(i_path, ".terms"), "invalid_interaction_terms", "schema",
+                  "Each interaction 'terms' must be a character vector of 2 predictor names.")
+        } else if (identical(tvec[[1L]], tvec[[2L]])) {
+          add_err(paste0(i_path, ".terms"), "self_interaction_forbidden", "statistical",
+                  sprintf("Interaction term '%s:%s' must combine two distinct predictors.", tvec[[1L]], tvec[[2L]]))
+        } else if (!all(tvec %in% pred_names)) {
+          missing_t <- setdiff(tvec, pred_names)
+          add_err(paste0(i_path, ".terms"), "unknown_interaction_predictor", "schema",
+                  sprintf("Interaction references unknown predictor(s): %s.", paste(missing_t, collapse = ", ")))
+        } else {
+          canon_pair <- paste(sort(tvec), collapse = ":")
+          if (canon_pair %in% seen_pairs) {
+            add_err(paste0(i_path, ".terms"), "duplicate_interaction", "schema",
+                    sprintf("Duplicate interaction term '%s'.", paste(tvec, collapse = ":")))
+          } else {
+            seen_pairs <- c(seen_pairs, canon_pair)
+            inter_names <- c(inter_names, paste(tvec, collapse = ":"), paste(rev(tvec), collapse = ":"))
+          }
+        }
+        if (!is_num_scalar(it$beta)) {
+          add_err(paste0(i_path, ".beta"), "non_numeric_interaction_beta", "schema",
+                  "Interaction 'beta' must be a finite numeric scalar.")
+        }
+      }
+    }
+
     if (!is.null(ef$focal_predictor)) {
-      if (!is_chr_scalar(ef$focal_predictor) || !(ef$focal_predictor %in% pred_names)) {
+      if (!is_chr_scalar(ef$focal_predictor) || !(ef$focal_predictor %in% c(pred_names, inter_names))) {
         add_err("effects.focal_predictor", "invalid_focal_predictor", "schema",
-                "effects$focal_predictor must be NULL or match an existing predictor name.")
+                "effects$focal_predictor must be NULL or match an existing predictor or interaction term.")
       } else {
         focal_pred <- ef$focal_predictor
       }
@@ -809,6 +913,8 @@ validate_spec_ir <- function(spec, strict = FALSE) {
 #' @param spec A `spec_ir` object.
 #' @return Logical scalar (`TRUE` if valid, `FALSE` otherwise).
 #' @export
+#' @examples
+#' is_valid_spec_ir(new_spec_ir())
 is_valid_spec_ir <- function(spec) {
   isTRUE(validate_spec_ir(spec, strict = FALSE)$valid)
 }
@@ -818,6 +924,9 @@ is_valid_spec_ir <- function(spec) {
 #' @param spec A `spec_ir` object.
 #' @return Invisibly returns `spec` if valid; otherwise aborts with formatted diagnostics.
 #' @export
+#' @examples
+#' spec <- assert_valid_spec_ir(new_spec_ir())
+#' spec$design_type
 assert_valid_spec_ir <- function(spec) {
   validate_spec_ir(spec, strict = TRUE)
   invisible(spec)

@@ -15,6 +15,11 @@ A \code{shiny.tagList} containing the dynamic controls panel.
 \description{
 Dynamically synthesizes and renders \strong{only} the \code{bslib} controls needed for
 the active \code{spec_ir}, staying bidirectionally synchronized with both visual
-widget edits and conversational IR updates while displaying live visual diff
-badges and inline statistical guardrail alerts.
+widget edits and conversational IR updates while displaying undo/redo
+history buttons, live visual diff badges, and inline statistical guardrail
+alerts.
+}
+\examples{
+ui <- mod_spec_controls_ui("controls")
+inherits(ui, "shiny.tag.list")
 }

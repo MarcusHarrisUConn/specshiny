@@ -1,0 +1,118 @@
+url: https://marcusharrisphd.com/specshiny/
+
+template:
+  bootstrap: 5
+  bootswatch: flatly
+  bslib:
+    primary: "#264653"
+    secondary: "#6e7f8d"
+    base_font: {google: "Source Sans Pro"}
+    heading_font: {google: "Source Serif 4"}
+
+home:
+  title: "specshiny: Neuro-Symbolic Specification Engine for Dynamic Shiny UIs"
+  description: >
+    Compile natural language into strictly schema-validated statistical
+    specifications, dynamically synthesize minimal bslib/Shiny UIs with
+    bidirectional sync and undo/redo history, and deterministically emit
+    AST-verified R scripts, Quarto reports, and reproducible study bundles.
+
+navbar:
+  structure:
+    left: [intro, reference, articles, guides, news]
+    right: [search, github]
+  components:
+    guides:
+      text: PDFs
+      menu:
+        - text: "Reference Manual (PDF)"
+          href: specshiny-manual.pdf
+        - text: "Architecture & Field Guide (PDF)"
+          href: specshiny-guide.pdf
+
+articles:
+  - title: "Core Workflows"
+    navbar: ~
+    contents:
+      - getting-started
+      - multilevel-power-walkthrough
+  - title: "Architecture, Shiny Modules & Security"
+    navbar: ~
+    contents:
+      - building-custom-apps
+      - ir-schema-and-safety
+
+reference:
+  - title: "Specification IR & Constructors"
+    desc: "Build, inspect, migrate, and query typed spec_ir objects."
+    contents:
+      - new_spec_ir
+      - spec_predictor
+      - spec_interaction
+      - is_spec_ir
+      - as_spec_ir
+      - migrate_spec_ir
+      - spec_design_types
+      - spec_schema_path
+      - spec_total_n
+      - spec_implied_intercept_sd
+      - spec_to_math
+  - title: "Validation, Diffs & Serialization"
+    desc: "Schema and statistical sanity guardrails, semantic diffs, and YAML/JSON I/O."
+    contents:
+      - validate_spec_ir
+      - is_valid_spec_ir
+      - assert_valid_spec_ir
+      - diff_spec_ir
+      - format_diff_summary
+      - read_spec_ir
+      - write_spec_ir
+      - as_spec_yaml
+      - as_spec_json
+      - parse_spec_text
+  - title: "Natural-Language Translators & Refinement"
+    desc: "Compile English descriptions into verified IR with pluggable backends."
+    contents:
+      - nl_to_spec
+      - refine_spec
+      - answer_clarifications
+      - translator_rule
+      - translator_openai
+      - translator_ollama
+      - spec_system_prompt
+  - title: "Undo/Redo History Stack"
+    desc: "Track validated specification snapshots across visual and conversational edits."
+    contents:
+      - spec_history
+      - history_push
+      - history_undo
+      - history_redo
+      - history_can_undo
+      - history_summary
+  - title: "Dynamic UI Synthesis & bslib/Shiny Modules"
+    desc: "Synthesize minimal context-specific controls with bidirectional sync."
+    contents:
+      - spec_to_controls
+      - patch_spec_from_control
+      - render_spec_controls_ui
+      - render_diff_badges_ui
+      - mod_spec_composer_ui
+      - mod_spec_composer_server
+      - mod_spec_controls_ui
+      - mod_spec_controls_server
+      - mod_spec_preview_ui
+      - mod_spec_preview_server
+  - title: "Deterministic Compilers, AST Safety & Study Bundles"
+    desc: "Compile AST-verified standalone R scripts, Quarto reports, and SHA-256 bundles."
+    contents:
+      - compile_r_script
+      - compile_quarto_report
+      - verify_compiled_r_ast
+      - export_spec_bundle
+      - verify_spec_bundle
+  - title: "Flagship Demo Application & Presets"
+    desc: "Launch the bundled interactive neuro-symbolic study designer."
+    contents:
+      - run_specshiny_demo
+      - specshiny_demo_app
+      - spec_presets

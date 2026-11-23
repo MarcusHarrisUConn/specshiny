@@ -1,0 +1,178 @@
+---
+title: "IR Schema, Migration, and Neuro-Symbolic Safety"
+output: rmarkdown::html_vignette
+vignette: >
+  %\VignetteIndexEntry{IR Schema, Migration, and Neuro-Symbolic Safety}
+  %\VignetteEngine{knitr::rmarkdown}
+  %\VignetteEncoding{UTF-8}
+---
+
+```{r, include = FALSE}
+knitr::opts_chunk$set(
+  collapse = TRUE,
+  comment = "#>"
+)
+```
+
+## The Neuro-Symbolic Trust Boundary
+
+Naive "LLM-writes-R-code" tools execute untrusted model output directly via
+`eval(parse())`, creating severe reproducibility, statistical correctness, and
+security vulnerabilities. `specshiny` enforces a strict **neuro-symbolic trust
+boundary**:
+
+1. **Declarative IR Only**: Translators (`translator_rule()`,
+   `translator_openai()`, `translator_ollama()`) produce a declarative data
+   structure (`spec_ir`), never executable code.
+2. **Pure-R Schema & Guardrail Gate**: `validate_spec_ir()` rejects unknown
+   nested JSON properties, non-ASCII or reserved identifiers, non-positive-definite
+   correlation matrices, unidentifiable random slopes, and unsafe parameter grids.
+3. **Static Positive-Allowlist AST Verification**: Every script emitted by
+   `compile_r_script()` must pass `verify_compiled_r_ast(code, strict = TRUE)`,
+   proving statically that only whitelisted statistical and base functions are
+   called.
+4. **Sanitized Reports & Verifiable Study Bundles**: `compile_quarto_report()`
+   neutralizes inline knitr expressions, code-fence breakouts, HTML/XSS, and
+   dangerous LaTeX directives, while `export_spec_bundle()` and
+   `verify_spec_bundle()` pair SHA-256 checksums with AST attestation.
+
+## 1. Closed Schema & Pure-ASCII Identifier Guardrails
+
+```{r}
+library(specshiny)
+
+base <- new_spec_ir()
+base$schema_version
+
+# Attempt to smuggle an unknown nested property from an LLM JSON payload
+raw_obj <- jsonlite::fromJSON(as_spec_json(base), simplifyVector = FALSE)
+raw_obj$hierarchy$injected_hook <- "system('id')"
+v_extra <- validate_spec_ir(as_spec_ir(raw_obj, validate = FALSE))
+v_extra$valid
+v_extra$errors[, c("path", "code", "category")]
+```
+
+Identifiers are restricted to pure ASCII (`<= 64` bytes, non-reserved),
+blocking code injection, leading dots, and Unicode homoglyphs:
+
+```{r}
+s_bad <- base
+s_bad$outcome$name <- "y; system('id')"
+validate_spec_ir(s_bad)$errors[, c("path", "code")]
+
+# YAML !expr evaluation tags are blocked even when yaml.eval.expr = TRUE
+evil_yaml <- "schema_version: !expr \"stop('NEVER_RUN')\"\ndesign_type: monte_carlo_lm\n"
+tryCatch(
+  parse_spec_text(evil_yaml, format = "yaml"),
+  error = function(e) cat("Blocked YAML attack:", conditionMessage(e), "\n")
+)
+```
+
+## 2. Forward-Compatible Schema Migration (`migrate_spec_ir()`)
+
+Specifications archived under schema `v1.0.0` validate with a structured
+`schema_outdated` warning and upgrade cleanly to `v1.1.0` via
+`migrate_spec_ir()`:
+
+```{r}
+legacy <- unclass(new_spec_ir(
+  design_type = "multilevel_sim",
+  hierarchy = list(levels = 2L, n_clusters = 30L, cluster_size = 15L, icc = 0.2)
+))
+legacy$schema_version <- "1.0.0"
+legacy$hierarchy$cluster_size_dist <- NULL
+legacy$outcome$error_dist <- NULL
+legacy$effects$interactions <- NULL
+
+validate_spec_ir(as_spec_ir(legacy, validate = FALSE))$warnings[, c("path", "code")]
+
+upgraded <- migrate_spec_ir(legacy)
+upgraded$schema_version
+attr(upgraded, "migration_log")
+```
+
+Attempting to downgrade a future schema version produces a crisp
+`specshiny_version_mismatch` diagnostic:
+
+```{r}
+future_spec <- legacy
+future_spec$schema_version <- "2.0.0"
+tryCatch(
+  migrate_spec_ir(future_spec),
+  error = function(e) cat("Version mismatch:", conditionMessage(e), "\n")
+)
+```
+
+## 3. Static AST Safety Verification (`verify_compiled_r_ast()`)
+
+Every compiled simulation script passes static AST verification automatically:
+
+```{r}
+spec <- nl_to_spec(
+  "2-level power study with 40 schools, 20 students per school, ICC 0.2, treatment effect 0.35, 50 reps"
+)$spec
+
+code <- compile_r_script(spec)
+ast_ok <- verify_compiled_r_ast(code)
+ast_ok
+```
+
+Adversarial scripts attempting direct calls, triple-colon internal access,
+dynamic callees, or higher-order banned arguments (`lapply("id", system)`) are
+caught statically without ever executing a single line:
+
+```{r}
+attacks <- c(
+  direct_eval = "eval(parse(text = '1 + 1'))",
+  do_call = "do.call(rbind, list(1, 2))",
+  higher_order = "lapply(c('id'), system)",
+  triple_colon = "stats:::C_Cdqrls",
+  bad_package = "library(utils)"
+)
+
+data.frame(
+  attack = names(attacks),
+  safe = vapply(attacks, function(s) verify_compiled_r_ast(s)$safe, logical(1)),
+  first_violation = vapply(attacks, function(s) verify_compiled_r_ast(s)$violations$code[[1L]], character(1)),
+  row.names = NULL
+)
+```
+
+## 4. Quarto, LaTeX, and XSS Sanitization
+
+Even when untrusted free-text metadata contains inline knitr code, code-fence
+breakouts, LaTeX `\write18`, or `<script>` tags, `compile_quarto_report()`
+neutralizes every vector before emitting the `.qmd` file:
+
+```{r}
+poison <- new_spec_ir(
+  title = "Study `r system('id')` \\write18{id} <script>alert(1)</script>",
+  source_prompt = "Prompt `r 1 + 1` | table breakout",
+  hierarchy = list(levels = 1L, n_obs = 80L),
+  simulation = list(n_reps = 5L, seed = 42L)
+)
+qmd <- compile_quarto_report(poison, execute = FALSE)
+c(
+  has_inline_knitr = grepl("`r\\s", qmd, perl = TRUE),
+  has_write18 = grepl("\\\\write18", qmd, perl = TRUE),
+  has_raw_script = grepl("<script", qmd, ignore.case = TRUE),
+  uses_six_tilde_yaml_fence = grepl("~~~~~~yaml", qmd, fixed = TRUE)
+)
+```
+
+## 5. Self-Contained Reproducible Study Bundles
+
+`export_spec_bundle()` writes `spec.yaml`, `simulation.R`, `report.qmd`, and
+`bundle_manifest.json` (with SHA-256 digests and AST attestation) into a
+path-safe directory, and `verify_spec_bundle()` audits integrity end-to-end:
+
+```{r}
+bundle_dir <- file.path(tempdir(), "specshiny_safety_vignette_bundle")
+export_spec_bundle(spec, bundle_dir, overwrite = TRUE)
+ver <- verify_spec_bundle(bundle_dir)
+ver
+
+# Inspect manifest checksums and AST attestation
+ver$manifest$ast_verification
+unlink(bundle_dir, recursive = TRUE)
+```

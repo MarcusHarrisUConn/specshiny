@@ -21,3 +21,7 @@ iteratively refine the specification conversationally, answer structured
 clarifying questions for underspecified parameters, and inspect transparent
 rationales for every inferred default.
 }
+\examples{
+ui <- mod_spec_composer_ui("composer")
+inherits(ui, "shiny.tag.list")
+}

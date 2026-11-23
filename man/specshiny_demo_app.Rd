@@ -18,8 +18,8 @@ A \code{shiny.appobj} ready to run with \code{shiny::runApp()}.
 \description{
 Constructs a complete \code{bslib} Shiny application showcasing the full
 neuro-symbolic pipeline: Natural Language -> Validated \code{spec_ir} -> Dynamic
-Minimal Controls -> Bidirectional Sync & Visual Diffs -> Deterministic R &
-Quarto Compilation.
+Minimal Controls with Undo/Redo History -> Bidirectional Sync & Visual Diffs
+-> Deterministic AST-Verified R & Quarto Compilation.
 }
 \examples{
 app <- specshiny_demo_app()

@@ -28,3 +28,14 @@ A list of reactive accessors (\code{spec}, \code{diff}, \code{clarifications},
 \description{
 Natural-Language Specification Composer Shiny Module (Server)
 }
+\examples{
+spec_rv <- shiny::reactiveVal(NULL)
+shiny::testServer(
+  mod_spec_composer_server,
+  args = list(spec_rv = spec_rv),
+  {
+    session$setInputs(prompt = "Single-level study N = 150", compile = 1)
+    spec_rv()$hierarchy$n_obs
+  }
+)
+}

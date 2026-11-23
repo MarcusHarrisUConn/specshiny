@@ -4,7 +4,7 @@
 \alias{read_spec_ir}
 \title{Read a \code{spec_ir} object from a YAML or JSON file}
 \usage{
-read_spec_ir(path, format = NULL, validate = TRUE)
+read_spec_ir(path, format = NULL, validate = TRUE, auto_migrate = FALSE)
 }
 \arguments{
 \item{path}{Path to a \code{.yaml}, \code{.yml}, or \code{.json} specification file.}
@@ -13,6 +13,9 @@ read_spec_ir(path, format = NULL, validate = TRUE)
 extension when \code{NULL}.}
 
 \item{validate}{Logical; if \code{TRUE} (default), validates the loaded IR.}
+
+\item{auto_migrate}{Logical; if \code{TRUE}, automatically migrates legacy IR
+versions via \code{\link[=migrate_spec_ir]{migrate_spec_ir()}}. Defaults to \code{FALSE}.}
 }
 \value{
 A \code{spec_ir} object.

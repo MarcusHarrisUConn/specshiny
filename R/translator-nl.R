@@ -362,6 +362,27 @@ translate_prompt_backend.spec_translator_rule <- function(translator, prompt) {
     }
   }
 
+  # Unbalanced cluster sizes (2-level only)
+  cluster_size_dist <- if (levels_val == 2L) "fixed" else NULL
+  cluster_size_sd <- NULL
+  if (levels_val == 2L) {
+    m_cssd <- reg_capture("\\bcluster\\s+size\\s+sd\\s*(?:=|of|is)?\\s*(\\d+(?:\\.\\d+)?)\\b", low)
+    if (grepl("\\bpoisson\\s+cluster\\s+sizes?\\b", low, perl = TRUE)) {
+      cluster_size_dist <- "poisson"
+      mark_parsed("hierarchy.cluster_size_dist")
+    } else if (!is.null(m_cssd)) {
+      cluster_size_dist <- "normal"
+      cluster_size_sd <- as.numeric(m_cssd[[1L]])
+      mark_parsed("hierarchy.cluster_size_dist")
+      mark_parsed("hierarchy.cluster_size_sd")
+    } else if (grepl("\\b(unbalanced|unequal|varying)\\s+cluster\\s+sizes?\\b", low, perl = TRUE)) {
+      cluster_size_dist <- "normal"
+      cluster_size_sd <- max(1, round(0.25 * as.numeric(cluster_size), 2))
+      mark_parsed("hierarchy.cluster_size_dist")
+      rationale[["hierarchy.cluster_size_sd"]] <- sprintf("Unbalanced cluster sizes requested without explicit SD; defaulted cluster_size_sd to %s (25%% of mean).", format(cluster_size_sd))
+    }
+  }
+
   # --- 2. Outcome & Family ---
   out_family <- "gaussian"
   out_link <- "identity"
@@ -370,7 +391,7 @@ translate_prompt_backend.spec_translator_rule <- function(translator, prompt) {
     out_link <- if (grepl("\\bprobit\\b", low)) "probit" else "logit"
     mark_parsed("outcome.family")
     mark_parsed("outcome.link")
-  } else if (grepl("\\b(count\\s+outcome|poisson)\\b", low, perl = TRUE)) {
+  } else if (grepl("\\b(count\\s+outcome|poisson(?!\\s+cluster\\s+sizes?))\\b", low, perl = TRUE)) {
     out_family <- "poisson"
     out_link <- "log"
     mark_parsed("outcome.family")
@@ -380,6 +401,9 @@ translate_prompt_backend.spec_translator_rule <- function(translator, prompt) {
   }
 
   residual_sd <- NULL
+  error_dist <- NULL
+  error_df <- NULL
+  error_skew <- NULL
   if (out_family == "gaussian") {
     m_rsd <- reg_capture("\\b(?:residual\\s+sd|error\\s+sd|sigma)\\s*(?:=|of|is)?\\s*(\\d+(?:\\.\\d+)?)\\b", low)
     m_rvar <- reg_capture("\\b(?:residual\\s+variance|error\\s+variance)\\s*(?:=|of|is)?\\s*(\\d+(?:\\.\\d+)?)\\b", low)
@@ -392,6 +416,31 @@ translate_prompt_backend.spec_translator_rule <- function(translator, prompt) {
     } else {
       residual_sd <- 1.0
       rationale[["outcome.residual_sd"]] <- "Residual SD was not specified; defaulted to 1.0 so effect sizes are interpretable in SD units."
+    }
+
+    error_dist <- "normal"
+    if (grepl("\\b(heavy[- ]?tailed|t[- ]?distributed|student[- ]?t)\\s+(?:errors?|residuals?)\\b", low, perl = TRUE)) {
+      error_dist <- "t"
+      m_df <- reg_capture("\\b(?:df|degrees\\s+of\\s+freedom)\\s*(?:=|of|is)?\\s*(\\d+(?:\\.\\d+)?)\\b", low)
+      error_df <- if (!is.null(m_df) && as.numeric(m_df[[1L]]) > 2) {
+        mark_parsed("outcome.error_df")
+        as.numeric(m_df[[1L]])
+      } else {
+        rationale[["outcome.error_df"]] <- "Heavy-tailed t errors requested without explicit df; defaulted error_df to 5."
+        5
+      }
+      mark_parsed("outcome.error_dist")
+    } else if (grepl("\\b(skewed|asymmetric)\\s+(?:errors?|residuals?)\\b|\\berror\\s+skew(?:ness)?\\b", low, perl = TRUE)) {
+      error_dist <- "skewed"
+      m_sk <- reg_capture("\\b(?:error\\s+)?skew(?:ness)?\\s*(?:=|of|is)?\\s*(-?\\d+(?:\\.\\d+)?)\\b", low)
+      error_skew <- if (!is.null(m_sk) && as.numeric(m_sk[[1L]]) != 0 && abs(as.numeric(m_sk[[1L]])) <= 4) {
+        mark_parsed("outcome.error_skew")
+        as.numeric(m_sk[[1L]])
+      } else {
+        rationale[["outcome.error_skew"]] <- "Skewed errors requested without explicit skewness; defaulted error_skew to 1.5."
+        1.5
+      }
+      mark_parsed("outcome.error_dist")
     }
   }
 
@@ -545,6 +594,39 @@ translate_prompt_backend.spec_translator_rule <- function(translator, prompt) {
   }
 
   focal_predictor <- if (has_treatment) "treatment" else predictors[[1L]]$name
+
+  # Optional two-way / cross-level interaction terms
+  interactions <- list()
+  m_int <- reg_capture("\\b(?:cross[- ]?level\\s+)?interaction\\s+(?:between\\s+)?([a-z][a-z0-9_]*)\\s*(?:and|:|\\*)\\s*([a-z][a-z0-9_]*)(?:\\s*(?:effect|beta|of|=|is)?\\s*(-?\\d+(?:\\.\\d+)?))?", low)
+  if (is.null(m_int)) {
+    m_int <- reg_capture("\\b([a-z][a-z0-9_]*):([a-z][a-z0-9_]*)\\s*(?:interaction)?\\s*(?:effect|beta|of|=|is)?\\s*(-?\\d+(?:\\.\\d+)?)?", low)
+  }
+  if (!is.null(m_int)) {
+    t1 <- m_int[[1L]]
+    t2 <- m_int[[2L]]
+    if (is_valid_r_ident(t1) && is_valid_r_ident(t2) && !identical(t1, t2)) {
+      if (!has_pred(t1)) {
+        add_pred(spec_predictor(t1, level = 1L, distribution = "normal", role = "covariate"), beta = 0.2)
+      }
+      if (!has_pred(t2)) {
+        t2_lvl <- if (levels_val == 2L && (grepl("cross[- ]?level", low) || grepl("^z[1-9]$", t2))) 2L else 1L
+        add_pred(spec_predictor(t2, level = t2_lvl, distribution = "normal", role = "covariate"), beta = 0.2)
+      }
+      ibeta <- if (length(m_int) >= 3L && nzchar(m_int[[3L]])) {
+        as.numeric(m_int[[3L]])
+      } else {
+        m_ib <- reg_capture("\\binteraction\\s+(?:effect|beta)\\s*(?:=|of|is)?\\s*(-?\\d+(?:\\.\\d+)?)\\b", low)
+        if (!is.null(m_ib)) as.numeric(m_ib[[1L]]) else 0.25
+      }
+      p_names_now <- vapply(predictors, `[[`, character(1), "name")
+      ct <- canonical_interaction_terms(c(t1, t2), p_names_now)
+      interactions[[1L]] <- spec_interaction(ct[[1L]], ct[[2L]], beta = ibeta)
+      mark_parsed("effects.interactions")
+      if (grepl("\\bpower\\s+(?:(?:analysis|study|simulation)\\s+)?(?:for|to\\s+detect)\\s+(?:the\\s+)?(?:cross[- ]?level\\s+)?interaction\\b", low, perl = TRUE)) {
+        focal_predictor <- paste(ct, collapse = ":")
+      }
+    }
+  }
 
   # Optional predictor correlation matrix (same-level predictors)
   pred_corr <- NULL
@@ -731,6 +813,8 @@ translate_prompt_backend.spec_translator_rule <- function(translator, prompt) {
       levels = 2L,
       n_clusters = n_clusters,
       cluster_size = cluster_size,
+      cluster_size_dist = cluster_size_dist,
+      cluster_size_sd = cluster_size_sd,
       cluster_name = cluster_name,
       unit_name = unit_name,
       icc = icc
@@ -752,10 +836,15 @@ translate_prompt_backend.spec_translator_rule <- function(translator, prompt) {
     hierarchy = hier_arg,
     predictors = predictors,
     predictor_corr = pred_corr,
-    outcome = list(name = "y", family = out_family, link = out_link, residual_sd = residual_sd),
+    outcome = list(
+      name = "y", family = out_family, link = out_link,
+      residual_sd = residual_sd, error_dist = error_dist,
+      error_df = error_df, error_skew = error_skew
+    ),
     effects = list(
       intercept = 0,
       fixed = fixed_effects,
+      interactions = interactions,
       focal_predictor = focal_predictor,
       random = list(
         intercept = (levels_val == 2L),
@@ -824,6 +913,8 @@ refine_spec_backend.spec_translator_rule <- function(translator, spec, instructi
     s$hierarchy$n_obs <- max(50L, as.integer(spec_total_n(s)))
     s$hierarchy$n_clusters <- NULL
     s$hierarchy$cluster_size <- NULL
+    s$hierarchy$cluster_size_dist <- NULL
+    s$hierarchy$cluster_size_sd <- NULL
     s$hierarchy$cluster_name <- NULL
     s$hierarchy$icc <- NULL
     for (idx in seq_along(s$predictors)) {
@@ -872,6 +963,28 @@ refine_spec_backend.spec_translator_rule <- function(translator, spec, instructi
       s$effects$random$intercept_sd <- NULL
       mark("hierarchy.icc")
     }
+
+    if (grepl("\\bfixed\\s+cluster\\s+sizes?\\b", low, perl = TRUE)) {
+      s$hierarchy$cluster_size_dist <- "fixed"
+      s$hierarchy$cluster_size_sd <- NULL
+      mark("hierarchy.cluster_size_dist")
+    } else if (grepl("\\bpoisson\\s+cluster\\s+sizes?\\b", low, perl = TRUE)) {
+      s$hierarchy$cluster_size_dist <- "poisson"
+      s$hierarchy$cluster_size_sd <- NULL
+      mark("hierarchy.cluster_size_dist")
+    } else {
+      m_cssd <- reg_capture("\\bcluster\\s+size\\s+sd\\s*(?:to|=|of|is)?\\s*(\\d+(?:\\.\\d+)?)\\b", low)
+      if (!is.null(m_cssd)) {
+        s$hierarchy$cluster_size_dist <- "normal"
+        s$hierarchy$cluster_size_sd <- as.numeric(m_cssd[[1L]])
+        mark("hierarchy.cluster_size_dist")
+        mark("hierarchy.cluster_size_sd")
+      } else if (grepl("\\b(unbalanced|unequal)\\s+cluster\\s+sizes?\\b", low, perl = TRUE)) {
+        s$hierarchy$cluster_size_dist <- "normal"
+        s$hierarchy$cluster_size_sd <- max(1, round(0.25 * as.numeric(s$hierarchy$cluster_size), 2))
+        mark("hierarchy.cluster_size_dist")
+      }
+    }
   } else {
     m_n <- reg_capture("\\b(?:sample\\s+size|n_obs|n)\\s*(?:to|=|of)?\\s*(\\d+)\\b", low)
     if (!is.null(m_n)) {
@@ -885,14 +998,20 @@ refine_spec_backend.spec_translator_rule <- function(translator, spec, instructi
     s$outcome$family <- "binomial"
     s$outcome$link <- if (grepl("\\bprobit\\b", low)) "probit" else "logit"
     s$outcome$residual_sd <- NULL
+    s$outcome$error_dist <- NULL
+    s$outcome$error_df <- NULL
+    s$outcome$error_skew <- NULL
     s$simulation$parameter_grid$residual_sd <- NULL
     q_r <- as.integer(isTRUE(s$effects$random$intercept)) + length(s$effects$random$slopes)
     s$estimator$engine <- infer_default_engine(as.integer(s$hierarchy$levels), "binomial", q_r)
     mark("outcome.family")
-  } else if (grepl("\\b(poisson|count\\s+outcome)\\b", low, perl = TRUE)) {
+  } else if (grepl("\\b(poisson(?!\\s+cluster\\s+sizes?)|count\\s+outcome)\\b", low, perl = TRUE)) {
     s$outcome$family <- "poisson"
     s$outcome$link <- "log"
     s$outcome$residual_sd <- NULL
+    s$outcome$error_dist <- NULL
+    s$outcome$error_df <- NULL
+    s$outcome$error_skew <- NULL
     s$simulation$parameter_grid$residual_sd <- NULL
     q_r <- as.integer(isTRUE(s$effects$random$intercept)) + length(s$effects$random$slopes)
     s$estimator$engine <- infer_default_engine(as.integer(s$hierarchy$levels), "poisson", q_r)
@@ -901,9 +1020,31 @@ refine_spec_backend.spec_translator_rule <- function(translator, spec, instructi
     s$outcome$family <- "gaussian"
     s$outcome$link <- "identity"
     if (is.null(s$outcome$residual_sd)) s$outcome$residual_sd <- 1.0
+    if (is.null(s$outcome$error_dist)) s$outcome$error_dist <- "normal"
     q_r <- as.integer(isTRUE(s$effects$random$intercept)) + length(s$effects$random$slopes)
     s$estimator$engine <- infer_default_engine(as.integer(s$hierarchy$levels), "gaussian", q_r)
     mark("outcome.family")
+  }
+
+  if (identical(s$outcome$family, "gaussian")) {
+    if (grepl("\\bnormal\\s+(?:errors?|residuals?)\\b", low, perl = TRUE)) {
+      s$outcome$error_dist <- "normal"
+      s$outcome$error_df <- NULL
+      s$outcome$error_skew <- NULL
+      mark("outcome.error_dist")
+    } else if (grepl("\\b(heavy[- ]?tailed|t[- ]?distributed|student[- ]?t)\\s+(?:errors?|residuals?)\\b", low, perl = TRUE)) {
+      s$outcome$error_dist <- "t"
+      m_df <- reg_capture("\\b(?:df|degrees\\s+of\\s+freedom)\\s*(?:to|=|of|is)?\\s*(\\d+(?:\\.\\d+)?)\\b", low)
+      s$outcome$error_df <- if (!is.null(m_df)) as.numeric(m_df[[1L]]) else (s$outcome$error_df %||% 5)
+      s$outcome$error_skew <- NULL
+      mark("outcome.error_dist")
+    } else if (grepl("\\b(skewed|asymmetric)\\s+(?:errors?|residuals?)\\b|\\berror\\s+skew(?:ness)?\\b", low, perl = TRUE)) {
+      s$outcome$error_dist <- "skewed"
+      m_sk <- reg_capture("\\b(?:error\\s+)?skew(?:ness)?\\s*(?:to|=|of|is)?\\s*(-?\\d+(?:\\.\\d+)?)\\b", low)
+      s$outcome$error_skew <- if (!is.null(m_sk)) as.numeric(m_sk[[1L]]) else (s$outcome$error_skew %||% 1.5)
+      s$outcome$error_df <- NULL
+      mark("outcome.error_dist")
+    }
   }
 
   if (grepl("\\bprobit\\s+link\\b|\\buse\\s+probit\\b", low, perl = TRUE) && identical(s$outcome$family, "binomial")) {
@@ -948,7 +1089,10 @@ refine_spec_backend.spec_translator_rule <- function(translator, spec, instructi
         s$predictor_corr <- if (length(keep_idx) >= 2L) s$predictor_corr[keep_idx, keep_idx, drop = FALSE] else NULL
       }
       s$effects$fixed[[rem_nm]] <- NULL
-      if (identical(s$effects$focal_predictor, rem_nm)) {
+      if (length(s$effects$interactions %||% list()) > 0L) {
+        s$effects$interactions <- Filter(function(it) !(rem_nm %in% it$terms), s$effects$interactions)
+      }
+      if (identical(s$effects$focal_predictor, rem_nm) || grepl(paste0("(^|:)", rem_nm, "(:|$)"), s$effects$focal_predictor %||% "")) {
         s$effects$focal_predictor <- s$predictors[[1L]]$name
       }
       if (identical(s$missingness$auxiliary, rem_nm)) {
@@ -1005,6 +1149,47 @@ refine_spec_backend.spec_translator_rule <- function(translator, spec, instructi
     fp <- s$effects$focal_predictor %||% pred_names[[1L]]
     s$effects$fixed[[fp]] <- as.numeric(m_gen_fx[[1L]])
     mark(paste0("effects.fixed.", fp))
+  }
+
+  # 6b. Interactions add / remove in refine_spec
+  if (grepl("\\b(remove|drop)\\s+interaction\\b", low, perl = TRUE)) {
+    m_rint <- reg_capture("\\b(?:remove|drop)\\s+interaction\\s+(?:between\\s+)?([a-z][a-z0-9_]*)\\s*(?:and|:|\\*)\\s*([a-z][a-z0-9_]*)\\b", low)
+    if (!is.null(m_rint)) {
+      pair_rm <- sort(c(m_rint[[1L]], m_rint[[2L]]))
+      s$effects$interactions <- Filter(function(it) !identical(sort(it$terms), pair_rm), s$effects$interactions %||% list())
+    } else {
+      s$effects$interactions <- list()
+    }
+    if (grepl(":", s$effects$focal_predictor %||% "", fixed = TRUE)) {
+      s$effects$focal_predictor <- s$predictors[[1L]]$name
+    }
+    mark("effects.interactions")
+  } else if (grepl("\\b(add|include|set)\\s+(?:a\\s+)?(?:cross[- ]?level\\s+)?interaction\\b", low, perl = TRUE)) {
+    m_aint <- reg_capture("\\binteraction\\s+(?:between\\s+)?([a-z][a-z0-9_]*)\\s*(?:and|:|\\*)\\s*([a-z][a-z0-9_]*)(?:.*?(?:beta|effect|of|=|with)\\s*(-?\\d+(?:\\.\\d+)?))?", low)
+    if (!is.null(m_aint)) {
+      t1 <- m_aint[[1L]]; t2 <- m_aint[[2L]]
+      existing <- vapply(s$predictors, `[[`, character(1), "name")
+      if (is_valid_r_ident(t1) && is_valid_r_ident(t2) && !identical(t1, t2)) {
+        if (!(t1 %in% existing)) {
+          s$predictors[[length(s$predictors) + 1L]] <- spec_predictor(t1, level = 1L, distribution = "normal")
+          s$effects$fixed[[t1]] <- 0.2
+          existing <- c(existing, t1)
+        }
+        if (!(t2 %in% existing)) {
+          t2_lvl <- if (identical(as.integer(s$hierarchy$levels), 2L) && (grepl("cross[- ]?level", low) || grepl("^z[1-9]$", t2))) 2L else 1L
+          s$predictors[[length(s$predictors) + 1L]] <- spec_predictor(t2, level = t2_lvl, distribution = "normal")
+          s$effects$fixed[[t2]] <- 0.2
+          existing <- c(existing, t2)
+        }
+        ib <- if (length(m_aint) >= 3L && nzchar(m_aint[[3L]])) as.numeric(m_aint[[3L]]) else 0.25
+        ct <- canonical_interaction_terms(c(t1, t2), existing)
+        inters <- s$effects$interactions %||% list()
+        inters <- Filter(function(it) !identical(sort(it$terms), sort(ct)), inters)
+        inters[[length(inters) + 1L]] <- spec_interaction(ct[[1L]], ct[[2L]], beta = ib)
+        s$effects$interactions <- inters
+        mark(paste0("effects.interactions.", paste(ct, collapse = ":"), ".beta"))
+      }
+    }
   }
 
   # 7. Random slopes add / remove / correlation

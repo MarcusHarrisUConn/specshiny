@@ -20,3 +20,8 @@ An \code{htmltools::tagList} of \code{bslib::card()} elements.
 \description{
 Render a \code{spec_ui_descriptor} into \code{bslib} Shiny UI cards
 }
+\examples{
+desc <- spec_to_controls(new_spec_ir())
+ui_cards <- render_spec_controls_ui(desc)
+inherits(ui_cards, "shiny.tag.list")
+}

@@ -1,0 +1,109 @@
+schema_version: 1.1.0
+metadata:
+  title: 2-Level School Linear Power Simulation (Random Slopes)
+  description: Compiled from natural-language prompt via rule-based translator.
+  source_prompt: 2-level power analysis for the cross-level interaction between x1
+    and z1 of 0.30 with 50 schools, 20 students per school, cluster size sd 5, ICC
+    0.2, level-2 z1 effect 0.25, random slope for x1, t-distributed errors df 5, 300
+    replications
+  tags:
+    - power_analysis
+    - 2-level
+    - gaussian
+design_type: power_analysis
+hierarchy:
+  levels: 2
+  n_obs: ~
+  n_clusters: 50
+  cluster_size: 20
+  cluster_size_dist: normal
+  cluster_size_sd: 5.0
+  cluster_name: school
+  unit_name: student
+  icc: 0.2
+predictors:
+  - name: x1
+    level: 1
+    distribution: normal
+    mean: 0.0
+    sd: 1.0
+    prob: ~
+    min: ~
+    max: ~
+    centering: none
+    role: focal
+  - name: z1
+    level: 2
+    distribution: normal
+    mean: 0.0
+    sd: 1.0
+    prob: ~
+    min: ~
+    max: ~
+    centering: none
+    role: covariate
+predictor_corr: ~
+outcome:
+  name: 'y'
+  family: gaussian
+  link: identity
+  residual_sd: 1.0
+  error_dist: t
+  error_df: 5.0
+  error_skew: ~
+effects:
+  intercept: 0.0
+  fixed:
+    x1: 0.25
+    z1: 0.25
+  interactions:
+    - terms:
+        - x1
+        - z1
+      beta: 0.3
+  focal_predictor: x1:z1
+  random:
+    intercept: yes
+    intercept_sd: ~
+    slopes:
+      - predictor: x1
+        sd: 0.2
+    corr_matrix:
+      - - 1.0
+        - 0.0
+      - - 0.0
+        - 1.0
+missingness:
+  mechanism: none
+  rate: 0.0
+  target: outcome
+  auxiliary: ~
+  strength: ~
+estimator:
+  engine: lmer
+  reml: yes
+  conf_level: 0.95
+  missing_handling: complete_case
+simulation:
+  n_reps: 300
+  seed: 2026
+  alpha: 0.05
+  parameter_grid: {}
+defaults_rationale:
+  outcome.family: Outcome distribution was not specified; defaulted to Gaussian (continuous
+    outcome with identity link).
+  outcome.residual_sd: Residual SD was not specified; defaulted to 1.0 so effect sizes
+    are interpretable in SD units.
+  effects.random.slopes.x1.sd: Random slope SD for 'x1' was not specified; defaulted
+    to 0.20.
+  effects.random.corr_matrix: Random-effects correlation was not specified; defaulted
+    to 0 (uncorrelated intercept and slope).
+  missingness.mechanism: No missingness was mentioned; defaulted to complete data
+    ('none').
+  simulation.alpha: Significance level alpha was not specified; defaulted to 0.05
+    (two-sided).
+  simulation.seed: Random seed was not specified; set deterministic seed 2026 for
+    reproducibility.
+  estimator.engine: Selected 'lmer' estimator matching the 2-level gaussian model
+    specification.
+

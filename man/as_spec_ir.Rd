@@ -19,3 +19,8 @@ Normalizes raw nested list representations (for example from JSON or YAML
 parsing or external LLM output) into a typed \code{spec_ir} object without
 evaluating any strings as R code.
 }
+\examples{
+raw_list <- unclass(new_spec_ir())
+spec <- as_spec_ir(raw_list)
+is_spec_ir(spec)
+}

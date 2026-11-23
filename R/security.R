@@ -47,7 +47,7 @@ SPEC_AST_ALLOWED_BARE_CALLS <- c(
   "isTRUE", "is.null", "is.matrix", "expand.grid", "vector",
   "logical", "numeric", "integer", "character", "summary",
   "mean", "sqrt", "exp", "log", "abs", "pmin", "pmax", "round", "floor", "ceiling",
-  "sum", "unname", "set.seed", "RNGkind", "tryCatch", "lapply", "vapply",
+  "sum", "sign", "unname", "set.seed", "RNGkind", "tryCatch", "lapply", "vapply",
   "suppressMessages", "stop", "print", "requireNamespace", "library"
 )
 
@@ -57,13 +57,14 @@ SPEC_AST_ALLOWED_NS_CALLS <- list(
     "c", "list", "data.frame", "matrix", "diag", "chol", "cbind", "rbind",
     "rep", "seq_len", "seq_along", "length", "nrow", "ncol", "names", "which",
     "factor", "as.integer", "as.numeric", "is.finite", "isTRUE", "mean", "sqrt",
-    "exp", "abs", "pmin", "pmax", "round", "unname", "set.seed", "RNGkind",
-    "tryCatch", "lapply", "vapply", "suppressMessages", "stop", "print"
+    "exp", "abs", "pmin", "pmax", "round", "sum", "sign", "unname", "set.seed",
+    "RNGkind", "tryCatch", "lapply", "vapply", "suppressMessages", "stop", "print"
   ),
   stats = c(
-    "rnorm", "rbinom", "runif", "rpois", "plogis", "pnorm", "qnorm", "qt",
-    "qlogis", "uniroot", "sd", "ave", "lm", "glm", "gaussian", "binomial",
-    "poisson", "na.omit", "coef", "summary", "as.formula", "setNames"
+    "rnorm", "rbinom", "runif", "rpois", "rt", "rgamma",
+    "plogis", "pnorm", "qnorm", "qt", "qlogis", "uniroot", "sd", "ave",
+    "lm", "glm", "gaussian", "binomial", "poisson", "na.omit", "coef",
+    "summary", "as.formula", "setNames"
   ),
   lme4 = c(
     "lmer", "glmer", "isSingular"

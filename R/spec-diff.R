@@ -118,6 +118,10 @@ diff_spec_ir <- function(old, new, ignore_rationale = TRUE, ignore_metadata = FA
 #'
 #' @return A character scalar summarizing the changes.
 #' @export
+#' @examples
+#' s1 <- new_spec_ir(hierarchy = list(levels = 1L, n_obs = 100L))
+#' s2 <- new_spec_ir(hierarchy = list(levels = 1L, n_obs = 250L))
+#' format_diff_summary(diff_spec_ir(s1, s2))
 format_diff_summary <- function(diff, max_items = 6L) {
   if (!inherits(diff, "spec_diff") || !diff$has_changes) {
     return("No changes.")
@@ -161,7 +165,7 @@ flatten_spec_for_diff <- function(spec, ignore_rationale = TRUE, ignore_metadata
   }
 
   if (is.list(spec$hierarchy)) {
-    for (k in c("levels", "n_obs", "n_clusters", "cluster_size", "cluster_name", "unit_name", "icc")) {
+    for (k in c("levels", "n_obs", "n_clusters", "cluster_size", "cluster_size_dist", "cluster_size_sd", "cluster_name", "unit_name", "icc")) {
       add_val(paste0("hierarchy.", k), spec$hierarchy[[k]])
     }
   }
@@ -185,7 +189,7 @@ flatten_spec_for_diff <- function(spec, ignore_rationale = TRUE, ignore_metadata
   }
 
   if (is.list(spec$outcome)) {
-    for (k in c("name", "family", "link", "residual_sd")) {
+    for (k in c("name", "family", "link", "residual_sd", "error_dist", "error_df", "error_skew")) {
       add_val(paste0("outcome.", k), spec$outcome[[k]])
     }
   }
@@ -196,6 +200,14 @@ flatten_spec_for_diff <- function(spec, ignore_rationale = TRUE, ignore_metadata
     if (is.list(spec$effects$fixed)) {
       for (fn in names(spec$effects$fixed)) {
         add_val(paste0("effects.fixed.", fn), spec$effects$fixed[[fn]])
+      }
+    }
+    if (is.list(spec$effects$interactions)) {
+      for (it in spec$effects$interactions) {
+        if (is.list(it) && length(it$terms) == 2L) {
+          iname <- paste(it$terms, collapse = ":")
+          add_val(paste0("effects.interactions.", iname, ".beta"), it$beta)
+        }
       }
     }
     if (is.list(spec$effects$random)) {

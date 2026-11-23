@@ -4,7 +4,14 @@
 \alias{mod_spec_preview_server}
 \title{Live Specification & Deterministic Codegen Preview Shiny Module (Server)}
 \usage{
-mod_spec_preview_server(id, spec_rv, last_diff_rv = NULL)
+mod_spec_preview_server(
+  id,
+  spec_rv,
+  last_diff_rv = NULL,
+  max_preview_reps = 10L,
+  max_preview_n = 2000L,
+  max_preview_seconds = 5
+)
 }
 \arguments{
 \item{id}{Module namespace ID.}
@@ -12,11 +19,33 @@ mod_spec_preview_server(id, spec_rv, last_diff_rv = NULL)
 \item{spec_rv}{A \code{shiny::reactiveVal} holding the current validated \code{spec_ir}.}
 
 \item{last_diff_rv}{Optional \code{shiny::reactiveVal} holding the latest \code{spec_diff}.}
+
+\item{max_preview_reps}{Positive integer hard cap on preview replications
+(defaults to \code{10L}).}
+
+\item{max_preview_n}{Positive integer soft cap on total observations simulated
+per preview replication (defaults to \code{2000L}).}
+
+\item{max_preview_seconds}{Positive numeric wall-clock budget in seconds for
+the preview loop (defaults to \code{5}).}
 }
 \value{
 A list of reactive expressions: \code{math}, \code{yaml}, \code{json}, \code{r_script},
-\code{quarto_report}, and \code{preview_results}.
+\code{quarto_report}, \code{preview_results}, and \code{preview_warnings}.
 }
 \description{
-Live Specification & Deterministic Codegen Preview Shiny Module (Server)
+Reactively renders mathematical summaries, YAML/JSON IR, AST-verified R code,
+and Quarto reports, and enforces hard replication, sample-size, and wall-time
+budgets on the interactive quick preview runner so large simulation specs
+(e.g., \code{n_reps = 50000}) never freeze the Shiny session.
+}
+\examples{
+spec_rv <- shiny::reactiveVal(new_spec_ir(simulation = list(n_reps = 5L, seed = 1L)))
+shiny::testServer(
+  mod_spec_preview_server,
+  args = list(spec_rv = spec_rv),
+  {
+    grepl("run_simulation", session$returned$r_script(), fixed = TRUE)
+  }
+)
 }

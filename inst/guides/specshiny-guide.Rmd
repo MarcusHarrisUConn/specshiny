@@ -1,0 +1,139 @@
+---
+title: "specshiny: Neuro-Symbolic Specification & Dynamic Shiny UI Architecture Guide"
+subtitle: "Practitioner Reference & Field Guide (v0.3.0)"
+author: "Marcus Harris"
+date: "2026"
+output:
+  pdf_document:
+    toc: true
+    toc_depth: 2
+    number_sections: true
+    latex_engine: pdflatex
+fontsize: 10pt
+geometry: margin=0.85in
+---
+
+```{r setup, include=FALSE}
+knitr::opts_chunk$set(
+  collapse = TRUE,
+  comment = "#>",
+  eval = TRUE
+)
+library(specshiny)
+```
+
+# Neuro-Symbolic Architecture Overview
+
+`specshiny` separates **user intent**, **interface presentation**, and
+**statistical execution** to resolve the flexibility-versus-accessibility
+trade-off in statistical Shiny applications without ever evaluating untrusted
+language-model output:
+
+```text
+[Plain-English Prompt / Refinements]
+        |
+        v  Pluggable Translator (translator_rule / translator_openai / translator_ollama)
+[Typed Specification IR: spec_ir v1.1.0 (YAML / JSON)]
+        |
+        v  Pure-R Schema & Statistical Sanity Validator (validate_spec_ir)
+        +----------------------------------------------+
+        |                                              |
+        v                                              v
+[Dynamic Minimal bslib/Shiny UI]             [Deterministic Compilers]
+- spec_to_controls() (active only)           - compile_r_script() (AST-verified)
+- mod_spec_composer_* / controls_*           - compile_quarto_report() (sanitized)
+- spec_history() Undo / Redo + Diffs         - export_spec_bundle() (SHA-256)
+```
+
+## Trust Boundaries & Safety Guarantees
+
+1. **Zero `eval(parse())` of Untrusted Input:** Translators emit declarative
+   JSON/YAML only; YAML parsers explicitly enforce `eval.expr = FALSE` and
+   block `!expr` tags.
+2. **Closed Schema Allowlists:** `validate_spec_ir()` rejects unknown nested
+   properties, non-ASCII homoglyphs, leading dots, reserved words, and
+   non-positive-definite covariance/correlation matrices via eigenvalue checks.
+3. **Mandatory Static AST Gate (`verify_compiled_r_ast()`):** Every compiled R
+   script is parsed statically (zero execution) and verified against a closed
+   positive allowlist (`base`, `stats`, `lme4`, and script-local helpers).
+   Calls to `eval`, `parse`, `system`, `system2`, `do.call`, `source`,
+   `unlink`, `file.remove`, `get`, `assign`, `:::`, dynamic callees, and
+   higher-order banned references (`lapply(x, system)`) are unconditionally
+   rejected.
+4. **Quarto, LaTeX, and XSS Defenses:** `compile_quarto_report()` neutralizes
+   inline knitr expressions, uses 6-tilde outer YAML fences, strips dangerous
+   LaTeX directives (`\write18`, `\input`, `\immediate`), and escapes HTML
+   angle brackets.
+
+# Specification Grammar (`spec_ir` v1.1.0) Cheat Sheet
+
+| Section | Core Fields | Guardrails Enforced |
+| :--- | :--- | :--- |
+| `hierarchy` | `levels` (1 or 2), `n_obs`, `n_clusters`, `cluster_size`, `cluster_size_dist` (`fixed`/`normal`/`poisson`), `cluster_size_sd`, `icc` | `n_obs >= 5`; `n_clusters >= 3`; `cluster_size > q_rand`; `icc` in `[0, 1)`; `cluster_size_sd > 0` |
+| `predictors` | `name`, `level`, `distribution` (`normal`/`binary`/`uniform`), `centering`, `role` + optional `predictor_corr` | Pure ASCII identifiers; unique names; `sd > 0`; `0 < prob < 1`; `min < max`; PD `predictor_corr` (same-level only) |
+| `outcome` | `name`, `family` (`gaussian`/`binomial`/`poisson`), `link`, `residual_sd`, `error_dist` (`normal`/`t`/`skewed`), `error_df`, `error_skew` | Valid family-link pair; `residual_sd > 0`; `error_df > 2`; `error_skew` in `[-4, 4] \ {0}` |
+| `effects` | `intercept`, `fixed`, `interactions` (`spec_interaction()`), `focal_predictor`, `random` (`intercept`, `slopes`, `corr_matrix`) | Level-1 predictors only for random slopes; PD `corr_matrix`; distinct interaction terms |
+| `missingness` | `mechanism` (`none`/`MCAR`/`MAR`), `rate`, `target`, `auxiliary`, `strength` | `rate` in `[0, 0.95)`; `rate == 0` when `none`; MAR requires valid `auxiliary` and non-zero `strength` |
+| `estimator` | `engine` (`lm`/`glm`/`lmer`/`glmer`), `reml`, `conf_level` | Family/level/random-effects compatibility; `conf_level` in `(0.5, 1)` |
+| `simulation` | `n_reps`, `seed`, `alpha`, `parameter_grid` | `n_reps` in `[1, 100000]`; `alpha` in `(0, 0.5)`; grid cardinality `<= 250` |
+
+# Core Workflow Reference
+
+## 1. Translate, Refine, and Manage Undo/Redo History
+
+```{r workflow-demo}
+prompt <- paste(
+  "2-level power analysis for the cross-level interaction between x1 and z1 of 0.30",
+  "with 50 schools, 20 students per school, cluster size sd 5, ICC 0.2,",
+  "random slope for x1, t-distributed errors df 5, 200 replications"
+)
+
+tr <- nl_to_spec(prompt)
+hist <- spec_history(tr$spec)
+
+ref <- refine_spec(tr$spec, "increase clusters to 70 and add 15% MAR missingness")
+history_push(hist, ref$spec, label = "70 schools + 15% MAR")
+format_diff_summary(ref$diff)
+history_summary(hist)
+```
+
+## 2. Minimal Dynamic UI Synthesis
+
+```{r ui-demo}
+d_simple <- spec_to_controls(new_spec_ir())
+d_rich   <- spec_to_controls(ref$spec)
+c(single_level_controls = d_simple$control_count,
+  multilevel_interaction_controls = d_rich$control_count)
+```
+
+## 3. Deterministic Compilation, AST Audit & Study Bundles
+
+```{r bundle-demo}
+r_code <- compile_r_script(ref$spec)
+ast_res <- verify_compiled_r_ast(r_code)
+c(ast_safe = ast_res$safe, expressions = ast_res$n_expressions)
+
+bdir <- file.path(tempdir(), "specshiny_guide_bundle")
+export_spec_bundle(ref$spec, bdir, overwrite = TRUE)
+ver <- verify_spec_bundle(bdir)
+ver$valid
+unlink(bdir, recursive = TRUE)
+```
+
+# Composing Dynamic `bslib` / Shiny Apps
+
+Connect the three reusable modules through two shared `shiny::reactiveVal`
+objects (`spec_rv` and `last_diff_rv`) plus a `spec_history()` stack:
+
+- `mod_spec_composer_ui()` / `mod_spec_composer_server()` --- NL prompt
+  compilation, presets, iterative refinements, clarifications, and defaults
+  rationale.
+- `mod_spec_controls_ui()` / `mod_spec_controls_server()` --- minimal active
+  `bslib` widgets, loop-free bidirectional sync, undo/redo buttons, visual
+  diff badges, and inline guardrail alerts.
+- `mod_spec_preview_ui()` / `mod_spec_preview_server()` --- live mathematical
+  equations, YAML/JSON IR, AST-verified R script, budget-capped quick preview
+  runner (`max_preview_reps`, `max_preview_n`, `max_preview_seconds`), Quarto
+  `.qmd` report, and download handlers.
+
+Launch the bundled flagship demo interactively with `run_specshiny_demo()`.

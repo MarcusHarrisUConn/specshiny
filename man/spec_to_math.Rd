@@ -14,8 +14,10 @@ A named list with elements \code{formula}, \code{text}, and \code{latex}.
 }
 \description{
 Produces deterministic R formula, plain-text, and LaTeX mathematical
-representations of a validated \code{spec_ir} specification for display in
-dynamic Shiny previews and Quarto reports.
+representations of a validated \code{spec_ir} specification (including two-way
+and cross-level interactions, unbalanced cluster sizes, and heavy-tailed or
+skewed error distributions) for display in dynamic Shiny previews and
+Quarto reports.
 }
 \examples{
 spec <- new_spec_ir(

@@ -24,3 +24,10 @@ Runs the Shiny application (invisibly returns the result of
 \description{
 Launch the bundled \code{specshiny} flagship reference demo Shiny application
 }
+\examples{
+\donttest{
+if (interactive()) {
+  run_specshiny_demo()
+}
+}
+}

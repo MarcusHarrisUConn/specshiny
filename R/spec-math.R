@@ -1,8 +1,39 @@
+# Order interaction terms consistently with predictor declaration order so
+# model formulas and coef() row names always match deterministically.
+canonical_interaction_terms <- function(terms, pred_names) {
+  pos <- match(terms, pred_names)
+  if (length(pos) == 2L && !any(is.na(pos)) && pos[[1L]] > pos[[2L]]) {
+    rev(terms)
+  } else {
+    terms
+  }
+}
+
+spec_focal_beta <- function(spec) {
+  focal <- spec$effects$focal_predictor
+  if (is.null(focal)) return(NA_real_)
+  if (focal %in% names(spec$effects$fixed %||% list())) {
+    return(as.numeric(spec$effects$fixed[[focal]]))
+  }
+  pred_names <- vapply(spec$predictors, `[[`, character(1), "name")
+  for (it in spec$effects$interactions %||% list()) {
+    ct <- canonical_interaction_terms(it$terms, pred_names)
+    if (identical(focal, paste(it$terms, collapse = ":")) ||
+        identical(focal, paste(ct, collapse = ":")) ||
+        identical(focal, paste(rev(ct), collapse = ":"))) {
+      return(as.numeric(it$beta))
+    }
+  }
+  NA_real_
+}
+
 #' Synthesize mathematical and formula summaries from a `spec_ir`
 #'
 #' Produces deterministic R formula, plain-text, and LaTeX mathematical
-#' representations of a validated `spec_ir` specification for display in
-#' dynamic Shiny previews and Quarto reports.
+#' representations of a validated `spec_ir` specification (including two-way
+#' and cross-level interactions, unbalanced cluster sizes, and heavy-tailed or
+#' skewed error distributions) for display in dynamic Shiny previews and
+#' Quarto reports.
 #'
 #' @param spec A valid `spec_ir` object.
 #' @return A named list with elements `formula`, `text`, and `latex`.
@@ -18,7 +49,16 @@ spec_to_math <- function(spec) {
 
   y_name <- spec$outcome$name
   pred_names <- vapply(spec$predictors, `[[`, character(1), "name")
-  fixed_rhs <- paste(pred_names, collapse = " + ")
+  pred_levels <- stats::setNames(
+    vapply(spec$predictors, function(p) as.integer(p$level), integer(1)),
+    pred_names
+  )
+  inters <- spec$effects$interactions %||% list()
+  inter_formula_terms <- vapply(inters, function(it) {
+    paste(canonical_interaction_terms(it$terms, pred_names), collapse = ":")
+  }, character(1))
+
+  fixed_rhs <- paste(c(pred_names, inter_formula_terms), collapse = " + ")
 
   levels_val <- as.integer(spec$hierarchy$levels)
   rand <- spec$effects$random
@@ -50,12 +90,11 @@ spec_to_math <- function(spec) {
     log = "\\log"
   )
 
-  # Build fixed terms in LaTeX
+  # Build fixed + interaction terms in LaTeX
   idx_sub <- if (levels_val == 2L) "ij" else "i"
   fixed_latex_terms <- vapply(seq_along(spec$predictors), function(k) {
     p <- spec$predictors[[k]]
     p_sub <- if (levels_val == 2L && identical(as.integer(p$level), 2L)) "j" else idx_sub
-    b_val <- spec$effects$fixed[[p$name]] %||% 0
     pname_tex <- escape_latex_ident(p$name)
     sprintf("\\beta_{%d}\\,\\text{%s}_{%s}", k, pname_tex, p_sub)
   }, character(1))
@@ -66,6 +105,40 @@ spec_to_math <- function(spec) {
     sprintf("\\beta_{%d} = %s", k, format(round(b_val, 4), trim = TRUE))
   }, character(1))
 
+  if (length(inters) > 0L) {
+    for (m in seq_along(inters)) {
+      ct <- canonical_interaction_terms(inters[[m]]$terms, pred_names)
+      s1 <- if (levels_val == 2L && identical(pred_levels[[ct[[1L]]]], 2L)) "j" else idx_sub
+      s2 <- if (levels_val == 2L && identical(pred_levels[[ct[[2L]]]], 2L)) "j" else idx_sub
+      fixed_latex_terms <- c(
+        fixed_latex_terms,
+        sprintf("\\gamma_{%d}\\,\\text{%s}_{%s}\\text{%s}_{%s}",
+                m, escape_latex_ident(ct[[1L]]), s1, escape_latex_ident(ct[[2L]]), s2)
+      )
+      beta_defs <- c(
+        beta_defs,
+        sprintf("\\gamma_{%d} = %s", m, format(round(as.numeric(inters[[m]]$beta), 4), trim = TRUE))
+      )
+    }
+  }
+
+  # Level-1 error distribution notation (Gaussian family)
+  err_dist <- spec$outcome$error_dist %||% "normal"
+  err_tex <- if (identical(spec$outcome$family, "gaussian")) {
+    rsd_str <- format(round(spec$outcome$residual_sd, 4), trim = TRUE)
+    if (identical(err_dist, "t")) {
+      sprintf("\\varepsilon_{%s} \\sim %s\\,t^*_{%s}\\;(\\text{Var} = %s^2)",
+              idx_sub, rsd_str, format(round(spec$outcome$error_df, 2), trim = TRUE), rsd_str)
+    } else if (identical(err_dist, "skewed")) {
+      sprintf("\\varepsilon_{%s} \\sim %s\\,\\text{SkewGamma}^*(\\gamma_1 = %s)\\;(\\text{Var} = %s^2)",
+              idx_sub, rsd_str, format(round(spec$outcome$error_skew, 2), trim = TRUE), rsd_str)
+    } else {
+      sprintf("\\varepsilon_{%s} \\sim \\mathcal{N}(0, %s^2)", idx_sub, rsd_str)
+    }
+  } else {
+    ""
+  }
+
   y_tex <- escape_latex_ident(y_name)
   lines <- character()
 
@@ -73,9 +146,8 @@ spec_to_math <- function(spec) {
     if (spec$outcome$family == "gaussian") {
       lines <- c(
         lines,
-        sprintf("\\text{%s}_i &= \\beta_0 + %s + \\varepsilon_i, \\quad \\varepsilon_i \\sim \\mathcal{N}(0, %s^2)",
-                y_tex, paste(fixed_latex_terms, collapse = " + "),
-                format(round(spec$outcome$residual_sd, 4), trim = TRUE))
+        sprintf("\\text{%s}_i &= \\beta_0 + %s + \\varepsilon_i, \\quad %s",
+                y_tex, paste(fixed_latex_terms, collapse = " + "), err_tex)
       )
     } else {
       dist_tex <- if (spec$outcome$family == "binomial") "\\text{Bernoulli}(\\mu_i)" else "\\text{Poisson}(\\mu_i)"
@@ -86,7 +158,6 @@ spec_to_math <- function(spec) {
       )
     }
   } else {
-    # 2-level model
     re_latex_terms <- character()
     if (isTRUE(rand$intercept)) {
       re_latex_terms <- c(re_latex_terms, "u_{0j}")
@@ -99,9 +170,8 @@ spec_to_math <- function(spec) {
     if (spec$outcome$family == "gaussian") {
       lines <- c(
         lines,
-        sprintf("\\text{%s}_{ij} &= \\beta_0 + %s%s + \\varepsilon_{ij}, \\quad \\varepsilon_{ij} \\sim \\mathcal{N}(0, %s^2)",
-                y_tex, paste(fixed_latex_terms, collapse = " + "), re_part,
-                format(round(spec$outcome$residual_sd, 4), trim = TRUE))
+        sprintf("\\text{%s}_{ij} &= \\beta_0 + %s%s + \\varepsilon_{ij}, \\quad %s",
+                y_tex, paste(fixed_latex_terms, collapse = " + "), re_part, err_tex)
       )
     } else {
       dist_tex <- if (spec$outcome$family == "binomial") "\\text{Bernoulli}(\\mu_{ij})" else "\\text{Poisson}(\\mu_{ij})"
@@ -114,14 +184,22 @@ spec_to_math <- function(spec) {
 
     tau0 <- spec_implied_intercept_sd(spec)
     q_rand <- as.integer(isTRUE(rand$intercept)) + length(slope_preds)
+    cs_dist <- spec$hierarchy$cluster_size_dist %||% "fixed"
+    nj_tex <- switch(
+      cs_dist,
+      fixed = sprintf("n_j = %d", as.integer(spec$hierarchy$cluster_size)),
+      normal = sprintf("n_j \\sim \\mathcal{N}_+(%d, %s^2)", as.integer(spec$hierarchy$cluster_size), format(round(spec$hierarchy$cluster_size_sd, 2), trim = TRUE)),
+      poisson = sprintf("n_j \\sim \\text{Poisson}_+(%d)", as.integer(spec$hierarchy$cluster_size))
+    )
+
     if (q_rand == 1L && isTRUE(rand$intercept)) {
       lines <- c(
         lines,
-        sprintf("u_{0j} &\\sim \\mathcal{N}(0, %s^2) \\quad (\\text{ICC} = %s, \\; J = %d, \\; n_j = %d)",
+        sprintf("u_{0j} &\\sim \\mathcal{N}(0, %s^2) \\quad (\\text{ICC} = %s, \\; J = %d, \\; %s)",
                 format(round(tau0, 4), trim = TRUE),
                 format(round(spec$hierarchy$icc, 4), trim = TRUE),
                 as.integer(spec$hierarchy$n_clusters),
-                as.integer(spec$hierarchy$cluster_size))
+                nj_tex)
       )
     } else if (q_rand > 1L) {
       sd_vec <- c(
@@ -134,9 +212,11 @@ spec_to_math <- function(spec) {
       )
       lines <- c(
         lines,
-        sprintf("(%s)^\\top &\\sim \\mathcal{N}(\\mathbf{0}, \\boldsymbol{\\Sigma}), \\quad \\text{diag}(\\boldsymbol{\\Sigma})^{1/2} = (%s)",
+        sprintf("(%s)^\\top &\\sim \\mathcal{N}(\\mathbf{0}, \\boldsymbol{\\Sigma}), \\quad \\text{diag}(\\boldsymbol{\\Sigma})^{1/2} = (%s), \\; J = %d, \\; %s",
                 paste(u_vec_names, collapse = ", "),
-                paste(format(round(sd_vec, 4), trim = TRUE), collapse = ", "))
+                paste(format(round(sd_vec, 4), trim = TRUE), collapse = ", "),
+                as.integer(spec$hierarchy$n_clusters),
+                nj_tex)
       )
     }
   }
@@ -176,10 +256,16 @@ spec_to_math <- function(spec) {
 
   # Concise plain-text summary
   hier_txt <- if (levels_val == 2L) {
-    sprintf("2-level (%d %ss x %d %ss, total N = %d, ICC = %.2f)",
+    cs_dist <- spec$hierarchy$cluster_size_dist %||% "fixed"
+    cs_note <- switch(
+      cs_dist,
+      fixed = sprintf("%d %ss", spec$hierarchy$cluster_size, spec$hierarchy$unit_name),
+      normal = sprintf("unbalanced Normal(mean=%d, sd=%s) %ss", spec$hierarchy$cluster_size, format(spec$hierarchy$cluster_size_sd), spec$hierarchy$unit_name),
+      poisson = sprintf("unbalanced Poisson(mean=%d) %ss", spec$hierarchy$cluster_size, spec$hierarchy$unit_name)
+    )
+    sprintf("2-level (%d %ss x %s, expected N = %d, ICC = %.2f)",
             spec$hierarchy$n_clusters, spec$hierarchy$cluster_name,
-            spec$hierarchy$cluster_size, spec$hierarchy$unit_name,
-            spec_total_n(spec), spec$hierarchy$icc)
+            cs_note, spec_total_n(spec), spec$hierarchy$icc)
   } else {
     sprintf("1-level (N = %d %ss)", spec$hierarchy$n_obs, spec$hierarchy$unit_name)
   }
@@ -188,12 +274,19 @@ spec_to_math <- function(spec) {
   } else {
     sprintf("%s missingness (%.0f%% on %s)", spec$missingness$mechanism, 100 * spec$missingness$rate, y_name)
   }
+  err_txt <- if (identical(spec$outcome$family, "gaussian") && !identical(err_dist, "normal")) {
+    if (identical(err_dist, "t")) sprintf(" | Errors: Student-t(df=%s)", format(spec$outcome$error_df))
+    else sprintf(" | Errors: Skewed(skew=%s)", format(spec$outcome$error_skew))
+  } else {
+    ""
+  }
+  focal_b <- spec_focal_beta(spec)
   text_str <- paste(
-    sprintf("Model: %s (%s, %s link)", formula_str, spec$outcome$family, spec$outcome$link),
+    sprintf("Model: %s (%s, %s link%s)", formula_str, spec$outcome$family, spec$outcome$link, err_txt),
     sprintf("Structure: %s | Estimator: %s", hier_txt, spec$estimator$engine),
-    sprintf("Focal predictor: %s (beta = %s) | %s",
+    sprintf("Focal term: %s (beta = %s) | %s",
             spec$effects$focal_predictor %||% "none",
-            if (!is.null(spec$effects$focal_predictor)) format(spec$effects$fixed[[spec$effects$focal_predictor]]) else "NA",
+            if (is.finite(focal_b)) format(focal_b) else "NA",
             miss_txt),
     sep = "\n"
   )

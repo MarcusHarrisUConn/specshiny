@@ -15,3 +15,9 @@ An \code{htmltools} tag representing the live change diff banner.
 \description{
 Render visual diff badges for a \code{spec_diff} object
 }
+\examples{
+s1 <- new_spec_ir(hierarchy = list(levels = 1L, n_obs = 100L))
+s2 <- new_spec_ir(hierarchy = list(levels = 1L, n_obs = 200L))
+tag <- render_diff_badges_ui(diff_spec_ir(s1, s2))
+inherits(tag, "shiny.tag")
+}

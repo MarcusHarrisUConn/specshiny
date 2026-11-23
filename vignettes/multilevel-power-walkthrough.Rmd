@@ -1,0 +1,139 @@
+---
+title: "Multilevel Cross-Level Interaction Power Walkthrough"
+output: rmarkdown::html_vignette
+vignette: >
+  %\VignetteIndexEntry{Multilevel Cross-Level Interaction Power Walkthrough}
+  %\VignetteEngine{knitr::rmarkdown}
+  %\VignetteEncoding{UTF-8}
+---
+
+```{r, include = FALSE}
+knitr::opts_chunk$set(
+  collapse = TRUE,
+  comment = "#>"
+)
+```
+
+## Scenario: Planning a Realistic 2-Level School Intervention Study
+
+Real educational and organizational multilevel studies rarely fit textbook
+idealized assumptions: cluster sizes vary across schools, researchers often
+power for a **cross-level interaction** (e.g., whether a school-level
+intervention `z1` moderates the slope of a student-level covariate `x1`), and
+level-1 residuals can exhibit heavy tails.
+
+This walkthrough takes a realistic study from plain English all the way to an
+AST-verified standalone simulation script, executed power summary, visualization,
+and reproducible study bundle—running 100% offline.
+
+## 1. Plain-English Intent to Verified `spec_ir`
+
+```{r}
+library(specshiny)
+
+prompt <- paste(
+  "2-level power analysis for the cross-level interaction between x1 and z1 of 0.35",
+  "with 40 schools, 18 students per school, cluster size sd 5, ICC 0.20,",
+  "level-2 z1 effect 0.25, random slope for x1 with sd 0.20,",
+  "t-distributed errors df 5, 12 replications"
+)
+
+tr <- nl_to_spec(prompt)
+tr$spec
+```
+
+Inspect the synthesized mathematical model and LaTeX equation:
+
+```{r}
+math <- spec_to_math(tr$spec)
+cat(math$formula, "\n\n")
+cat(math$text, "\n")
+```
+
+## 2. Conversational Refinement with Undo/Redo History
+
+Track design iterations with `spec_history()` as we add a cluster-count power
+sweep across 25, 45, and 65 schools:
+
+```{r}
+hist <- spec_history(tr$spec)
+
+ref1 <- refine_spec(tr$spec, "sweep clusters across 25, 45, 65")
+history_push(hist, ref1$spec, label = "Add cluster count grid")
+ref1$diff
+
+# Inspect what happens if we also test 15% MAR attrition, then undo it
+ref2 <- refine_spec(ref1$spec, "set 15% MAR missingness")
+history_push(hist, ref2$spec, label = "Test 15% MAR")
+history_summary(hist)
+
+# Undo back to the complete-data sweep cleanly
+restored <- history_undo(hist)
+study_spec <- restored$spec
+study_spec$missingness$mechanism
+```
+
+## 3. Dynamic Minimal UI Control Surface
+
+Notice how `spec_to_controls()` automatically exposes ONLY the active
+parameters for this complex design—including `cluster_size_sd`, `error_df`,
+`inter_beta_x1__z1`, `slope_sd_x1`, `corr_1_2`, and `grid_n_clusters`—while
+still hiding irrelevant controls like `n_obs`, `error_skew`, `missing_rate`, or
+`outcome_link`:
+
+```{r}
+desc <- spec_to_controls(study_spec)
+desc
+```
+
+## 4. Compiling, AST-Verifying, and Executing the Power Study
+
+Compile `study_spec` into a standalone R script (automatically verified by
+`verify_compiled_r_ast()`), execute it in a fresh isolated environment, and
+inspect the empirical power table across cluster counts:
+
+```{r}
+sim_file <- tempfile(fileext = ".R")
+code <- compile_r_script(study_spec, file = sim_file, run_on_source = TRUE)
+verify_compiled_r_ast(code)
+
+has_lme4 <- requireNamespace("lme4", quietly = TRUE)
+if (has_lme4) {
+  sim_env <- new.env(parent = globalenv())
+  invisible(capture.output(sys.source(sim_file, envir = sim_env)))
+  power_tbl <- sim_env$results$summary
+  power_tbl
+}
+unlink(sim_file)
+```
+
+## 5. Visualizing the Empirical Power Curve
+
+```{r, fig.width = 6, fig.height = 3.8}
+if (has_lme4 && requireNamespace("ggplot2", quietly = TRUE)) {
+  ggplot2::ggplot(power_tbl, ggplot2::aes(x = n_clusters, y = power)) +
+    ggplot2::geom_line(color = "#264653", linewidth = 1) +
+    ggplot2::geom_point(color = "#264653", size = 3) +
+    ggplot2::geom_hline(yintercept = 0.80, linetype = "dashed", color = "#6e7f8d") +
+    ggplot2::scale_y_continuous(limits = c(0, 1)) +
+    ggplot2::labs(
+      title = "Cross-Level Interaction Power Curve (x1:z1)",
+      subtitle = "Unbalanced clusters (SD = 5), random slope, Student-t(df = 5) errors",
+      x = "Number of Schools (J)",
+      y = "Empirical Power (alpha = 0.05)"
+    ) +
+    ggplot2::theme_minimal(base_size = 11)
+}
+```
+
+## 6. Exporting a Verified Study Bundle
+
+Package the validated specification, standalone script, Quarto report, and
+SHA-256 manifest into a self-contained reproducible archive:
+
+```{r}
+bundle_dir <- file.path(tempdir(), "specshiny_mlm_walkthrough_bundle")
+export_spec_bundle(study_spec, bundle_dir, overwrite = TRUE)
+verify_spec_bundle(bundle_dir)
+unlink(bundle_dir, recursive = TRUE)
+```

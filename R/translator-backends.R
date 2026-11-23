@@ -129,6 +129,8 @@ translator_ollama <- function(model = "llama3.1",
 #' @param mode One of `"create"` (new spec from prompt) or `"refine"` (modify existing spec).
 #' @return Character scalar system prompt.
 #' @export
+#' @examples
+#' substr(spec_system_prompt("create"), 1, 120)
 spec_system_prompt <- function(mode = c("create", "refine")) {
   mode <- match.arg(mode)
   task_line <- if (mode == "create") {

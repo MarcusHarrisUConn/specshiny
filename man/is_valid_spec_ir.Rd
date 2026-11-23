@@ -15,3 +15,6 @@ Logical scalar (\code{TRUE} if valid, \code{FALSE} otherwise).
 \description{
 Check whether a \code{spec_ir} object is valid
 }
+\examples{
+is_valid_spec_ir(new_spec_ir())
+}

@@ -15,3 +15,7 @@ Invisibly returns \code{spec} if valid; otherwise aborts with formatted diagnost
 \description{
 Assert that a \code{spec_ir} object passes all schema and statistical checks
 }
+\examples{
+spec <- assert_valid_spec_ir(new_spec_ir())
+spec$design_type
+}

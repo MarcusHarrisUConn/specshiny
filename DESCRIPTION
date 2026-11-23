@@ -1,27 +1,33 @@
 Package: specshiny
-Title: Neuro-Symbolic Specification Engine for Dynamic Shiny UIs
-Version: 0.2.0
+Title: Neuro-Symbolic Specification Engine for Dynamic 'Shiny' UIs
+Version: 0.3.0
 Authors@R:
     person("Marcus", "Harris", , "marcus.harris.uconn@gmail.com", role = c("aut", "cre", "cph"))
 Description: Implements a neuro-symbolic architecture that compiles
     natural-language descriptions of statistical and simulation studies into a
     strictly schema-validated intermediate representation (IR) with statistical
     sanity guardrails, dynamically synthesizes context-specific 'bslib' and
-    'Shiny' user interfaces with bidirectional synchronization and visual
-    change diffs, and deterministically compiles validated specifications into
-    standalone R scripts and 'Quarto' reports without evaluating untrusted
-    language model output.
+    'Shiny' user interfaces with bidirectional synchronization, undo/redo
+    history, and visual change diffs, and deterministically compiles validated
+    specifications into AST-verified standalone R scripts, 'Quarto' reports,
+    and reproducible study bundles without evaluating untrusted language model
+    output (supporting offline rule-based parsing as well as 'OpenAI' and
+    'Ollama' backends using 'YAML' and 'JSON' serialization).
 License: MIT + file LICENSE
-URL: https://github.com/MarcusHarrisUConn/specshiny
+URL: https://github.com/MarcusHarrisUConn/specshiny,
+    https://marcusharrisphd.com/specshiny/
 BugReports: https://github.com/MarcusHarrisUConn/specshiny/issues
 Encoding: UTF-8
+Language: en-US
 Roxygen: list(markdown = TRUE)
 Config/testthat/edition: 3
+Config/roxygen2/version: 8.1.0
 Depends:
     R (>= 4.1.0)
 Imports:
     bslib,
     cli,
+    digest,
     htmltools,
     httr2,
     jsonlite,
@@ -37,7 +43,5 @@ Suggests:
     lme4,
     rmarkdown,
     testthat (>= 3.0.0),
-    tibble,
     withr
 VignetteBuilder: knitr
-Config/roxygen2/version: 8.1.0

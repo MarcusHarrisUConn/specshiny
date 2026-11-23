@@ -15,3 +15,7 @@ Logical scalar.
 \description{
 Test whether an object is a \code{spec_ir}
 }
+\examples{
+is_spec_ir(new_spec_ir())
+is_spec_ir(list())
+}

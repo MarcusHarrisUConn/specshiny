@@ -4,7 +4,7 @@
 \alias{mod_spec_controls_server}
 \title{Dynamic Specification Controls Shiny Module (Server)}
 \usage{
-mod_spec_controls_server(id, spec_rv, last_diff_rv = NULL)
+mod_spec_controls_server(id, spec_rv, last_diff_rv = NULL, history = NULL)
 }
 \arguments{
 \item{id}{Module namespace ID.}
@@ -12,14 +12,31 @@ mod_spec_controls_server(id, spec_rv, last_diff_rv = NULL)
 \item{spec_rv}{A \code{shiny::reactiveVal} holding the current validated \code{spec_ir}.}
 
 \item{last_diff_rv}{Optional \code{shiny::reactiveVal} holding the latest \code{spec_diff}.}
+
+\item{history}{Optional \code{\link[=spec_history]{spec_history()}} object; created automatically from
+the initial \code{spec_rv()} when \code{NULL}.}
 }
 \value{
-A list of reactives: \code{descriptor}, \code{guardrail_error}, and \code{diff}.
+A list of reactives and accessors: \code{descriptor}, \code{guardrail_error},
+\code{diff}, \code{history}, \code{can_undo}, and \code{can_redo}.
 }
 \description{
 Maintains loop-free bidirectional synchronization between \code{spec_rv} and the
-dynamically synthesized UI widgets. Structural IR changes re-synthesize the
-active control layout; value-only IR changes update active widgets in place;
-UI edits are validated through \code{\link[=patch_spec_from_control]{patch_spec_from_control()}} and rejected with
-inline diagnostic alerts if they violate statistical sanity guardrails.
+dynamically synthesized UI widgets, backed by a \code{\link[=spec_history]{spec_history()}} undo/redo
+stack that tracks both visual widget edits and conversational updates.
+Structural IR changes re-synthesize the active control layout; value-only IR
+changes update active widgets in place; UI edits are validated through
+\code{\link[=patch_spec_from_control]{patch_spec_from_control()}} and rejected with inline diagnostic alerts if
+they violate statistical sanity guardrails.
+}
+\examples{
+spec_rv <- shiny::reactiveVal(new_spec_ir())
+shiny::testServer(
+  mod_spec_controls_server,
+  args = list(spec_rv = spec_rv),
+  {
+    session$setInputs(n_obs = 300)
+    spec_rv()$hierarchy$n_obs
+  }
+)
 }

@@ -4,7 +4,12 @@
 \alias{parse_spec_text}
 \title{Parse a \code{spec_ir} object from YAML or JSON text}
 \usage{
-parse_spec_text(text, format = c("yaml", "json"), validate = TRUE)
+parse_spec_text(
+  text,
+  format = c("yaml", "json"),
+  validate = TRUE,
+  auto_migrate = FALSE
+)
 }
 \arguments{
 \item{text}{Character scalar containing YAML or JSON text.}
@@ -12,6 +17,9 @@ parse_spec_text(text, format = c("yaml", "json"), validate = TRUE)
 \item{format}{One of \code{"yaml"} or \code{"json"}.}
 
 \item{validate}{Logical; if \code{TRUE} (default), validates the parsed IR.}
+
+\item{auto_migrate}{Logical; if \code{TRUE}, automatically migrates legacy IR
+versions via \code{\link[=migrate_spec_ir]{migrate_spec_ir()}}. Defaults to \code{FALSE}.}
 }
 \value{
 A \code{spec_ir} object.

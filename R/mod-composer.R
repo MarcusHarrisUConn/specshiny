@@ -10,6 +10,9 @@
 #' @param default_prompt Optional initial prompt pre-filled in the text area.
 #' @return A `shiny.tagList` containing the composer UI.
 #' @export
+#' @examples
+#' ui <- mod_spec_composer_ui("composer")
+#' inherits(ui, "shiny.tag.list")
 mod_spec_composer_ui <- function(id, default_prompt = NULL) {
   ns <- shiny::NS(id)
   presets <- spec_presets()
@@ -79,6 +82,16 @@ mod_spec_composer_ui <- function(id, default_prompt = NULL) {
 #' @return A list of reactive accessors (`spec`, `diff`, `clarifications`,
 #'   `status`, `history`).
 #' @export
+#' @examples
+#' spec_rv <- shiny::reactiveVal(NULL)
+#' shiny::testServer(
+#'   mod_spec_composer_server,
+#'   args = list(spec_rv = spec_rv),
+#'   {
+#'     session$setInputs(prompt = "Single-level study N = 150", compile = 1)
+#'     spec_rv()$hierarchy$n_obs
+#'   }
+#' )
 mod_spec_composer_server <- function(id,
                                      spec_rv,
                                      translator = translator_rule(),

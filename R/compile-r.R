@@ -156,22 +156,39 @@ build_cfg_block <- function(spec, focal) {
   if (levels_val == 1L) {
     lines <- c(lines, sprintf("  n_obs = %s,", fmt_int(spec$hierarchy$n_obs)))
   } else {
+    cs_dist <- spec$hierarchy$cluster_size_dist %||% "fixed"
     lines <- c(
       lines,
       sprintf("  n_clusters = %s,", fmt_int(spec$hierarchy$n_clusters)),
       sprintf("  cluster_size = %s,", fmt_int(spec$hierarchy$cluster_size)),
+      sprintf("  cluster_size_dist = %s,", deparse1(cs_dist)),
+      if (identical(cs_dist, "normal")) sprintf("  cluster_size_sd = %s,", fmt_num(spec$hierarchy$cluster_size_sd)) else NULL,
       sprintf("  icc = %s,", fmt_num(spec$hierarchy$icc))
     )
   }
 
   if (identical(spec$outcome$family, "gaussian")) {
-    lines <- c(lines, sprintf("  residual_sd = %s,", fmt_num(spec$outcome$residual_sd)))
+    edist <- spec$outcome$error_dist %||% "normal"
+    lines <- c(
+      lines,
+      sprintf("  residual_sd = %s,", fmt_num(spec$outcome$residual_sd)),
+      sprintf("  error_dist = %s,", deparse1(edist)),
+      if (identical(edist, "t")) sprintf("  error_df = %s,", fmt_num(spec$outcome$error_df)) else NULL,
+      if (identical(edist, "skewed")) sprintf("  error_skew = %s,", fmt_num(spec$outcome$error_skew)) else NULL
+    )
+  }
+
+  pred_names <- vapply(spec$predictors, `[[`, character(1), "name")
+  canon_focal <- if (grepl(":", focal, fixed = TRUE)) {
+    paste(canonical_interaction_terms(strsplit(focal, ":", fixed = TRUE)[[1L]], pred_names), collapse = ":")
+  } else {
+    focal
   }
 
   lines <- c(
     lines,
     sprintf("  intercept = %s,", fmt_num(spec$effects$intercept)),
-    sprintf("  focal_predictor = %s,", deparse1(focal))
+    sprintf("  focal_predictor = %s,", deparse1(canon_focal))
   )
 
   fixed_entries <- vapply(spec$predictors, function(p) {
@@ -179,6 +196,17 @@ build_cfg_block <- function(spec, focal) {
     sprintf("%s = %s", p$name, fmt_num(b))
   }, character(1))
   lines <- c(lines, sprintf("  fixed = list(%s),", paste(fixed_entries, collapse = ", ")))
+
+  inters <- spec$effects$interactions %||% list()
+  if (length(inters) > 0L) {
+    int_entries <- vapply(inters, function(it) {
+      ct <- canonical_interaction_terms(it$terms, pred_names)
+      sprintf("%s = %s", deparse1(paste(ct, collapse = ":")), fmt_num(it$beta))
+    }, character(1))
+    lines <- c(lines, sprintf("  interactions = list(%s),", paste(int_entries, collapse = ", ")))
+  } else {
+    lines <- c(lines, "  interactions = list(),")
+  }
 
   if (!is.null(spec$predictor_corr) && is.matrix(spec$predictor_corr)) {
     lines <- c(lines, sprintf("  predictor_corr = %s,", fmt_matrix(spec$predictor_corr)))
@@ -258,14 +286,40 @@ build_dgp_block <- function(spec) {
       "  dat <- data.frame(row_id = seq_len(n))"
     )
   } else {
-    lines <- c(
-      lines,
-      "  n_clusters <- as.integer(params$n_clusters)",
-      "  cluster_size <- as.integer(params$cluster_size)",
-      "  n <- n_clusters * cluster_size",
-      "  cluster_idx <- rep(seq_len(n_clusters), each = cluster_size)",
-      sprintf("  dat <- data.frame(%s = factor(cluster_idx))", cl_name)
-    )
+    cs_dist <- spec$hierarchy$cluster_size_dist %||% "fixed"
+    q_rand_min <- max(2L, as.integer(isTRUE(spec$effects$random$intercept)) + length(spec$effects$random$slopes %||% list()) + 1L)
+    if (identical(cs_dist, "normal")) {
+      lines <- c(
+        lines,
+        "  n_clusters <- as.integer(params$n_clusters)",
+        "  cluster_size <- as.integer(params$cluster_size)",
+        sprintf("  min_nj <- %dL", q_rand_min),
+        "  cluster_sizes <- pmax(min_nj, as.integer(round(stats::rnorm(n_clusters, mean = cluster_size, sd = params$cluster_size_sd))))",
+        "  n <- sum(cluster_sizes)",
+        "  cluster_idx <- rep(seq_len(n_clusters), times = cluster_sizes)",
+        sprintf("  dat <- data.frame(%s = factor(cluster_idx))", cl_name)
+      )
+    } else if (identical(cs_dist, "poisson")) {
+      lines <- c(
+        lines,
+        "  n_clusters <- as.integer(params$n_clusters)",
+        "  cluster_size <- as.integer(params$cluster_size)",
+        sprintf("  min_nj <- %dL", q_rand_min),
+        "  cluster_sizes <- pmax(min_nj, stats::rpois(n_clusters, lambda = cluster_size))",
+        "  n <- sum(cluster_sizes)",
+        "  cluster_idx <- rep(seq_len(n_clusters), times = cluster_sizes)",
+        sprintf("  dat <- data.frame(%s = factor(cluster_idx))", cl_name)
+      )
+    } else {
+      lines <- c(
+        lines,
+        "  n_clusters <- as.integer(params$n_clusters)",
+        "  cluster_size <- as.integer(params$cluster_size)",
+        "  n <- n_clusters * cluster_size",
+        "  cluster_idx <- rep(seq_len(n_clusters), each = cluster_size)",
+        sprintf("  dat <- data.frame(%s = factor(cluster_idx))", cl_name)
+      )
+    }
   }
 
   # Predictor generation: exact Cholesky draw when predictor_corr is specified
@@ -344,10 +398,17 @@ build_dgp_block <- function(spec) {
     }
   }
 
-  # Linear predictor (fixed part)
+  # Linear predictor (fixed main effects + interactions)
   lines <- c(lines, "  eta <- rep(params$intercept, n)")
   for (p in spec$predictors) {
     lines <- c(lines, sprintf("  eta <- eta + params$fixed$%s * dat$%s", p$name, p$name))
+  }
+  pred_names <- vapply(spec$predictors, `[[`, character(1), "name")
+  for (it in spec$effects$interactions %||% list()) {
+    ct <- canonical_interaction_terms(it$terms, pred_names)
+    iname <- paste(ct, collapse = ":")
+    lines <- c(lines, sprintf("  eta <- eta + params$interactions[[%s]] * dat$%s * dat$%s",
+                              deparse1(iname), ct[[1L]], ct[[2L]]))
   }
 
   # Random effects (2-level only)
@@ -416,17 +477,36 @@ build_dgp_block <- function(spec) {
     }
   }
 
-  # Outcome draw from closed family/link switch
-  outcome_expr <- if (fam == "gaussian") {
-    "stats::rnorm(n, mean = eta, sd = params$residual_sd)"
-  } else if (fam == "binomial" && lnk == "logit") {
-    "stats::rbinom(n, size = 1L, prob = stats::plogis(eta))"
-  } else if (fam == "binomial" && lnk == "probit") {
-    "stats::rbinom(n, size = 1L, prob = stats::pnorm(eta))"
+  # Outcome draw from closed family/link/error_dist switch
+  if (fam == "gaussian") {
+    edist <- spec$outcome$error_dist %||% "normal"
+    if (identical(edist, "t")) {
+      lines <- c(
+        lines,
+        "  eps_t <- stats::rt(n, df = params$error_df) * sqrt((params$error_df - 2) / params$error_df)",
+        sprintf("  dat$%s <- eta + params$residual_sd * eps_t", y_name)
+      )
+    } else if (identical(edist, "skewed")) {
+      lines <- c(
+        lines,
+        "  k_shape <- 4 / (params$error_skew^2)",
+        "  g_raw <- stats::rgamma(n, shape = k_shape, rate = 1)",
+        "  eps_sk <- sign(params$error_skew) * (g_raw - k_shape) / sqrt(k_shape)",
+        sprintf("  dat$%s <- eta + params$residual_sd * eps_sk", y_name)
+      )
+    } else {
+      lines <- c(lines, sprintf("  dat$%s <- stats::rnorm(n, mean = eta, sd = params$residual_sd)", y_name))
+    }
   } else {
-    "stats::rpois(n, lambda = exp(pmin(eta, 15)))"
+    outcome_expr <- if (fam == "binomial" && lnk == "logit") {
+      "stats::rbinom(n, size = 1L, prob = stats::plogis(eta))"
+    } else if (fam == "binomial" && lnk == "probit") {
+      "stats::rbinom(n, size = 1L, prob = stats::pnorm(eta))"
+    } else {
+      "stats::rpois(n, lambda = exp(pmin(eta, 15)))"
+    }
+    lines <- c(lines, sprintf("  dat$%s <- %s", y_name, outcome_expr))
   }
-  lines <- c(lines, sprintf("  dat$%s <- %s", y_name, outcome_expr))
 
   # Missingness mechanism
   mech <- spec$missingness$mechanism
@@ -512,7 +592,7 @@ build_fit_block <- function(spec, formula_str, focal) {
     "fit_and_extract <- function(dat, params) {",
     "  dat_cc <- stats::na.omit(dat)",
     "  focal <- params$focal_predictor",
-    "  true_beta <- params$fixed[[focal]]",
+    "  true_beta <- if (!is.null(params$fixed[[focal]])) params$fixed[[focal]] else params$interactions[[focal]]",
     "  tryCatch(",
     "    {",
     fit_body,
@@ -558,7 +638,12 @@ build_runner_block <- function(spec) {
     "      for (gn in names(cfg$parameter_grid)) {",
     "        gval <- grid_df[[gn]][[g]]",
     "        if (gn == \"focal_effect\") {",
-    "          cell_params$fixed[[cell_params$focal_predictor]] <- gval",
+    "          fp <- cell_params$focal_predictor",
+    "          if (!is.null(cell_params$fixed[[fp]])) {",
+    "            cell_params$fixed[[fp]] <- gval",
+    "          } else {",
+    "            cell_params$interactions[[fp]] <- gval",
+    "          }",
     "        } else {",
     "          cell_params[[gn]] <- gval",
     "        }",
@@ -575,7 +660,8 @@ build_runner_block <- function(spec) {
     "    ses  <- vapply(rep_res, function(x) x$se, numeric(1))",
     "    rejs <- vapply(rep_res, function(x) x$reject, logical(1))",
     "    covs <- vapply(rep_res, function(x) x$covered, logical(1))",
-    "    true_beta <- cell_params$fixed[[cell_params$focal_predictor]]",
+    "    fp_now <- cell_params$focal_predictor",
+    "    true_beta <- if (!is.null(cell_params$fixed[[fp_now]])) cell_params$fixed[[fp_now]] else cell_params$interactions[[fp_now]]",
     "",
     "    ok <- which(conv)",
     "    n_ok <- length(ok)",

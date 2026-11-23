@@ -18,6 +18,7 @@ untrusted language-model output.
 Useful links:
 \itemize{
   \item \url{https://github.com/MarcusHarrisUConn/specshiny}
+  \item \url{https://marcusharrisphd.com/specshiny/}
   \item Report bugs at \url{https://github.com/MarcusHarrisUConn/specshiny/issues}
 }
 

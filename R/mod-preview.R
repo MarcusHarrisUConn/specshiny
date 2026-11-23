@@ -2,12 +2,15 @@
 #'
 #' Displays a live multi-tab `bslib` inspector for a validated `spec_ir`:
 #' mathematical model summary, serialized YAML/JSON IR, deterministic standalone
-#' R script (with optional fast preview execution), and Quarto `.qmd` report,
-#' each with download handlers.
+#' R script (with bounded budget-capped preview execution), and Quarto `.qmd`
+#' report, each with download handlers.
 #'
 #' @param id Module namespace ID.
 #' @return A `bslib::navset_card_tab()` UI component.
 #' @export
+#' @examples
+#' ui <- mod_spec_preview_ui("preview")
+#' inherits(ui, "bslib_fragment") || inherits(ui, "shiny.tag")
 mod_spec_preview_ui <- function(id) {
   ns <- shiny::NS(id)
   bslib::navset_card_tab(
@@ -42,7 +45,7 @@ mod_spec_preview_ui <- function(id) {
         class = "d-flex justify-content-between align-items-center mb-2",
         shiny::actionButton(
           inputId = ns("run_preview"),
-          label = "Run Quick Preview (10 reps)",
+          label = "Run Quick Preview (capped)",
           class = "btn-sm btn-outline-primary"
         ),
         shiny::downloadButton(ns("dl_r"), "Download .R", class = "btn-sm btn-primary")
@@ -63,16 +66,42 @@ mod_spec_preview_ui <- function(id) {
 
 #' Live Specification & Deterministic Codegen Preview Shiny Module (Server)
 #'
+#' Reactively renders mathematical summaries, YAML/JSON IR, AST-verified R code,
+#' and Quarto reports, and enforces hard replication, sample-size, and wall-time
+#' budgets on the interactive quick preview runner so large simulation specs
+#' (e.g., `n_reps = 50000`) never freeze the Shiny session.
+#'
 #' @param id Module namespace ID.
 #' @param spec_rv A `shiny::reactiveVal` holding the current validated `spec_ir`.
 #' @param last_diff_rv Optional `shiny::reactiveVal` holding the latest `spec_diff`.
+#' @param max_preview_reps Positive integer hard cap on preview replications
+#'   (defaults to `10L`).
+#' @param max_preview_n Positive integer soft cap on total observations simulated
+#'   per preview replication (defaults to `2000L`).
+#' @param max_preview_seconds Positive numeric wall-clock budget in seconds for
+#'   the preview loop (defaults to `5`).
 #'
 #' @return A list of reactive expressions: `math`, `yaml`, `json`, `r_script`,
-#'   `quarto_report`, and `preview_results`.
+#'   `quarto_report`, `preview_results`, and `preview_warnings`.
 #' @export
-mod_spec_preview_server <- function(id, spec_rv, last_diff_rv = NULL) {
+#' @examples
+#' spec_rv <- shiny::reactiveVal(new_spec_ir(simulation = list(n_reps = 5L, seed = 1L)))
+#' shiny::testServer(
+#'   mod_spec_preview_server,
+#'   args = list(spec_rv = spec_rv),
+#'   {
+#'     grepl("run_simulation", session$returned$r_script(), fixed = TRUE)
+#'   }
+#' )
+mod_spec_preview_server <- function(id,
+                                    spec_rv,
+                                    last_diff_rv = NULL,
+                                    max_preview_reps = 10L,
+                                    max_preview_n = 2000L,
+                                    max_preview_seconds = 5) {
   shiny::moduleServer(id, function(input, output, session) {
     preview_rv <- shiny::reactiveVal(NULL)
+    preview_warn_rv <- shiny::reactiveVal(character())
 
     math_r <- shiny::reactive({
       sp <- spec_rv()
@@ -104,20 +133,31 @@ mod_spec_preview_server <- function(id, spec_rv, last_diff_rv = NULL) {
       compile_quarto_report(sp)
     })
 
-    # Clear stale preview table whenever spec changes
     shiny::observeEvent(spec_rv(), {
       preview_rv(NULL)
+      preview_warn_rv(character())
     })
 
-    # Safe pure-R preview simulation (zero eval/parse)
+    # Safe budget-capped pure-R preview simulation (zero eval/parse)
     shiny::observeEvent(input$run_preview, {
       sp <- shiny::isolate(spec_rv())
       if (is.null(sp)) return()
       res <- tryCatch(
-        run_spec_preview_sim(sp, max_reps = 10L),
+        run_spec_preview_sim(
+          sp,
+          max_reps = max_preview_reps,
+          max_n = max_preview_n,
+          max_seconds = max_preview_seconds
+        ),
         error = function(e) e
       )
-      preview_rv(res)
+      if (inherits(res, "error")) {
+        preview_rv(res)
+        preview_warn_rv(character())
+      } else {
+        preview_rv(res$summary)
+        preview_warn_rv(res$warnings)
+      }
     })
 
     output$summary_ui <- shiny::renderUI({
@@ -126,14 +166,14 @@ mod_spec_preview_server <- function(id, spec_rv, last_diff_rv = NULL) {
       m <- math_r()
       desc <- spec_to_controls(sp)
       focal <- sp$effects$focal_predictor %||% sp$predictors[[1L]]$name
-      focal_b <- sp$effects$fixed[[focal]]
+      focal_b <- spec_focal_beta(sp)
 
       htmltools::tagList(
         htmltools::tags$div(
           class = "d-flex flex-wrap gap-2 mb-3",
-          htmltools::tags$span(class = "badge text-bg-success", "Schema & Guardrails: PASS"),
+          htmltools::tags$span(class = "badge text-bg-success", "Schema & AST Guardrails: PASS"),
           htmltools::tags$span(class = "badge text-bg-primary", paste("Design:", sp$design_type)),
-          htmltools::tags$span(class = "badge text-bg-secondary", paste("Total N:", spec_total_n(sp))),
+          htmltools::tags$span(class = "badge text-bg-secondary", paste("Expected N:", spec_total_n(sp))),
           htmltools::tags$span(class = "badge text-bg-info", paste("Estimator:", sp$estimator$engine)),
           htmltools::tags$span(class = "badge text-bg-dark", sprintf("Focal %s = %s", focal, format(focal_b))),
           htmltools::tags$span(class = "badge text-bg-light border text-dark", sprintf("%d Dynamic Controls", desc$control_count))
@@ -162,15 +202,28 @@ mod_spec_preview_server <- function(id, spec_rv, last_diff_rv = NULL) {
 
     output$preview_run_ui <- shiny::renderUI({
       res <- preview_rv()
+      warns <- preview_warn_rv()
       if (is.null(res)) return(NULL)
       if (inherits(res, "error")) {
         return(htmltools::tags$div(class = "alert alert-danger small py-2", conditionMessage(res)))
       }
+      warn_node <- if (length(warns) > 0L) {
+        htmltools::tags$div(
+          class = "alert alert-warning py-2 px-3 small mb-2",
+          htmltools::tags$strong("Preview Budget Guardrails Applied:"),
+          htmltools::tags$ul(class = "mb-0 ps-3", lapply(warns, htmltools::tags$li))
+        )
+      } else {
+        NULL
+      }
       tbl_lines <- utils::capture.output(print(res, row.names = FALSE))
-      htmltools::tags$div(
-        class = "alert alert-success py-2 px-3 small mb-2",
-        htmltools::tags$strong("Quick Preview Simulation (first grid cell, up to 10 reps):"),
-        htmltools::tags$pre(class = "mb-0 mt-1", paste(tbl_lines, collapse = "\n"))
+      htmltools::tagList(
+        warn_node,
+        htmltools::tags$div(
+          class = "alert alert-success py-2 px-3 small mb-2",
+          htmltools::tags$strong(sprintf("Quick Preview Simulation (%d completed rep%s, first grid cell):", res$n_reps, if (res$n_reps == 1L) "" else "s")),
+          htmltools::tags$pre(class = "mb-0 mt-1", paste(tbl_lines, collapse = "\n"))
+        )
       )
     })
 
@@ -197,40 +250,108 @@ mod_spec_preview_server <- function(id, spec_rv, last_diff_rv = NULL) {
       json = json_r,
       r_script = r_script_r,
       quarto_report = quarto_r,
-      preview_results = preview_rv
+      preview_results = preview_rv,
+      preview_warnings = preview_warn_rv
     )
   })
 }
 
-# Pure-R bounded preview simulator (zero eval/parse) for responsive Shiny previews
-run_spec_preview_sim <- function(spec, max_reps = 10L) {
+# Pure-R bounded preview simulator (zero eval/parse; restores global .Random.seed)
+run_spec_preview_sim <- function(spec,
+                                 max_reps = 10L,
+                                 max_n = 2000L,
+                                 max_seconds = 5) {
   assert_valid_spec_ir(spec)
   engine <- spec$estimator$engine
   if (engine %in% c("lmer", "glmer") && !requireNamespace("lme4", quietly = TRUE)) {
     cli::cli_abort("Package {.pkg lme4} is required to run multilevel preview simulations.")
   }
 
-  n_reps <- min(as.integer(spec$simulation$n_reps), as.integer(max_reps))
+  # Preserve global RNG state cleanly (CRAN hygiene)
+  has_seed <- exists(".Random.seed", envir = globalenv(), inherits = FALSE)
+  old_seed <- if (has_seed) get(".Random.seed", envir = globalenv(), inherits = FALSE) else NULL
+  old_kind <- RNGkind()
+  on.exit({
+    if (has_seed) {
+      assign(".Random.seed", old_seed, envir = globalenv())
+    } else if (exists(".Random.seed", envir = globalenv(), inherits = FALSE)) {
+      rm(".Random.seed", envir = globalenv())
+    } else {
+      RNGkind(kind = old_kind[[1L]], normal.kind = old_kind[[2L]], sample.kind = old_kind[[3L]])
+    }
+  }, add = TRUE)
+
+  warns <- character()
+  orig_reps <- as.integer(spec$simulation$n_reps)
+  n_reps <- min(orig_reps, as.integer(max_reps))
+  if (orig_reps > n_reps) {
+    warns <- c(
+      warns,
+      sprintf("Replications capped from %d to %d to keep Shiny responsive; download simulation.R for full execution.", orig_reps, n_reps)
+    )
+  }
+  if (length(spec$simulation$parameter_grid %||% list()) > 0L) {
+    warns <- c(warns, "Preview executes the baseline design cell only; download simulation.R for the full parameter grid.")
+  }
+
   levels_val <- as.integer(spec$hierarchy$levels)
+  eff_n_obs <- if (levels_val == 1L) as.integer(spec$hierarchy$n_obs) else NA_integer_
+  eff_n_cl <- if (levels_val == 2L) as.integer(spec$hierarchy$n_clusters) else NA_integer_
+  eff_cs <- if (levels_val == 2L) as.integer(spec$hierarchy$cluster_size) else NA_integer_
+
+  total_n_orig <- spec_total_n(spec)
+  if (is.finite(total_n_orig) && total_n_orig > as.integer(max_n)) {
+    if (levels_val == 1L) {
+      eff_n_obs <- as.integer(max_n)
+    } else {
+      scale_f <- sqrt(as.numeric(max_n) / as.numeric(total_n_orig))
+      q_min <- max(3L, as.integer(isTRUE(spec$effects$random$intercept)) + length(spec$effects$random$slopes %||% list()) + 2L)
+      eff_n_cl <- max(q_min, as.integer(floor(eff_n_cl * scale_f)))
+      eff_cs <- max(q_min, as.integer(floor(eff_cs * scale_f)))
+    }
+    warns <- c(
+      warns,
+      sprintf("Preview sample size scaled down from N = %d to fit the %d-observation interactive budget.", total_n_orig, as.integer(max_n))
+    )
+  }
+
   y_name <- spec$outcome$name
   fam <- spec$outcome$family
   lnk <- spec$outcome$link
-  focal <- spec$effects$focal_predictor %||% spec$predictors[[1L]]$name
-  true_beta <- as.numeric(spec$effects$fixed[[focal]])
+  pred_names <- vapply(spec$predictors, `[[`, character(1), "name")
+  focal_raw <- spec$effects$focal_predictor %||% pred_names[[1L]]
+  focal <- if (grepl(":", focal_raw, fixed = TRUE)) {
+    paste(canonical_interaction_terms(strsplit(focal_raw, ":", fixed = TRUE)[[1L]], pred_names), collapse = ":")
+  } else {
+    focal_raw
+  }
+  true_beta <- spec_focal_beta(spec)
   form <- stats::as.formula(spec_to_math(spec)$formula)
 
   set.seed(as.integer(spec$simulation$seed), kind = "L'Ecuyer-CMRG", normal.kind = "Inversion", sample.kind = "Rejection")
 
   run_one <- function() {
     if (levels_val == 1L) {
-      n <- as.integer(spec$hierarchy$n_obs)
+      n <- eff_n_obs
       dat <- data.frame(row_id = seq_len(n))
       cluster_idx <- NULL
     } else {
-      n_cl <- as.integer(spec$hierarchy$n_clusters)
-      cs <- as.integer(spec$hierarchy$cluster_size)
-      n <- n_cl * cs
-      cluster_idx <- rep(seq_len(n_cl), each = cs)
+      n_cl <- eff_n_cl
+      cs <- eff_cs
+      cs_dist <- spec$hierarchy$cluster_size_dist %||% "fixed"
+      min_nj <- max(2L, as.integer(isTRUE(spec$effects$random$intercept)) + length(spec$effects$random$slopes %||% list()) + 1L)
+      if (identical(cs_dist, "normal")) {
+        csizes <- pmax(min_nj, as.integer(round(stats::rnorm(n_cl, mean = cs, sd = as.numeric(spec$hierarchy$cluster_size_sd)))))
+        n <- sum(csizes)
+        cluster_idx <- rep(seq_len(n_cl), times = csizes)
+      } else if (identical(cs_dist, "poisson")) {
+        csizes <- pmax(min_nj, stats::rpois(n_cl, lambda = cs))
+        n <- sum(csizes)
+        cluster_idx <- rep(seq_len(n_cl), times = csizes)
+      } else {
+        n <- n_cl * cs
+        cluster_idx <- rep(seq_len(n_cl), each = cs)
+      }
       dat <- stats::setNames(data.frame(factor(cluster_idx)), spec$hierarchy$cluster_name)
     }
 
@@ -264,11 +385,11 @@ run_spec_preview_sim <- function(spec, max_reps = 10L) {
         }
       }
       draw_lvl(which(p_lvls == 1L), n, FALSE)
-      if (levels_val == 2L) draw_lvl(which(p_lvls == 2L), as.integer(spec$hierarchy$n_clusters), TRUE)
+      if (levels_val == 2L) draw_lvl(which(p_lvls == 2L), eff_n_cl, TRUE)
     } else {
       for (p in spec$predictors) {
         is_l2 <- levels_val == 2L && identical(as.integer(p$level), 2L)
-        dn <- if (is_l2) as.integer(spec$hierarchy$n_clusters) else n
+        dn <- if (is_l2) eff_n_cl else n
         vals <- switch(
           p$distribution,
           normal = stats::rnorm(dn, mean = p$mean, sd = p$sd),
@@ -289,13 +410,17 @@ run_spec_preview_sim <- function(spec, max_reps = 10L) {
     for (p in spec$predictors) {
       eta <- eta + as.numeric(spec$effects$fixed[[p$name]]) * dat[[p$name]]
     }
+    for (it in spec$effects$interactions %||% list()) {
+      ct <- canonical_interaction_terms(it$terms, pred_names)
+      eta <- eta + as.numeric(it$beta) * dat[[ct[[1L]]]] * dat[[ct[[2L]]]]
+    }
 
     if (levels_val == 2L) {
       has_ri <- isTRUE(spec$effects$random$intercept)
       slopes <- spec$effects$random$slopes %||% list()
       q_r <- as.integer(has_ri) + length(slopes)
       if (q_r > 0L) {
-        n_cl <- as.integer(spec$hierarchy$n_clusters)
+        n_cl <- eff_n_cl
         tau0 <- spec_implied_intercept_sd(spec)
         re_sds <- c(if (has_ri) tau0 else numeric(), vapply(slopes, function(sl) as.numeric(sl$sd), numeric(1)))
         U <- matrix(0, nrow = n_cl, ncol = q_r)
@@ -321,7 +446,18 @@ run_spec_preview_sim <- function(spec, max_reps = 10L) {
     }
 
     dat[[y_name]] <- if (fam == "gaussian") {
-      stats::rnorm(n, eta, as.numeric(spec$outcome$residual_sd))
+      edist <- spec$outcome$error_dist %||% "normal"
+      rsd <- as.numeric(spec$outcome$residual_sd)
+      if (identical(edist, "t")) {
+        df_v <- as.numeric(spec$outcome$error_df)
+        eta + rsd * stats::rt(n, df = df_v) * sqrt((df_v - 2) / df_v)
+      } else if (identical(edist, "skewed")) {
+        sk_v <- as.numeric(spec$outcome$error_skew)
+        k_sh <- 4 / (sk_v^2)
+        eta + rsd * sign(sk_v) * (stats::rgamma(n, shape = k_sh, rate = 1) - k_sh) / sqrt(k_sh)
+      } else {
+        stats::rnorm(n, eta, rsd)
+      }
     } else if (fam == "binomial" && lnk == "logit") {
       stats::rbinom(n, 1L, stats::plogis(eta))
     } else if (fam == "binomial" && lnk == "probit") {
@@ -339,7 +475,7 @@ run_spec_preview_sim <- function(spec, max_reps = 10L) {
       g <- as.numeric(spec$missingness$strength)
       tr <- as.numeric(spec$missingness$rate)
       a0 <- tryCatch(
-        stats::uniroot(function(a) mean(stats::plogis(a + g * az)) - tr, c(-20, 20))$root,
+        stats::uniroot(function(a) mean(stats::plogis(a + g * az)) - tr, c(-25, 25))$root,
         error = function(e) stats::qlogis(tr)
       )
       dat[[y_name]][stats::rbinom(n, 1L, stats::plogis(a0 + g * az)) == 1L] <- NA
@@ -381,7 +517,20 @@ run_spec_preview_sim <- function(spec, max_reps = 10L) {
     })
   }
 
-  reps <- lapply(seq_len(n_reps), function(i) run_one())
+  t0 <- proc.time()[["elapsed"]]
+  reps <- list()
+  for (i in seq_len(n_reps)) {
+    reps[[i]] <- run_one()
+    if (i < n_reps && (proc.time()[["elapsed"]] - t0) > as.numeric(max_seconds)) {
+      warns <- c(
+        warns,
+        sprintf("Preview stopped early at %d/%d replications after exceeding the %.1fs interactive time budget.", i, n_reps, as.numeric(max_seconds))
+      )
+      break
+    }
+  }
+
+  n_done <- length(reps)
   conv <- vapply(reps, `[[`, logical(1), "converged")
   ok <- which(conv)
   ests <- vapply(reps, `[[`, numeric(1), "est")[ok]
@@ -389,8 +538,8 @@ run_spec_preview_sim <- function(spec, max_reps = 10L) {
   rejs <- vapply(reps, `[[`, logical(1), "reject")[ok]
   covs <- vapply(reps, `[[`, logical(1), "covered")[ok]
 
-  data.frame(
-    n_reps = n_reps,
+  summ_df <- data.frame(
+    n_reps = n_done,
     n_converged = length(ok),
     true_effect = true_beta,
     mean_est = if (length(ok) > 0L) round(mean(ests), 4) else NA_real_,
@@ -400,4 +549,6 @@ run_spec_preview_sim <- function(spec, max_reps = 10L) {
     coverage = if (length(ok) > 0L) round(mean(covs), 4) else NA_real_,
     stringsAsFactors = FALSE
   )
+
+  list(summary = summ_df, warnings = warns)
 }
