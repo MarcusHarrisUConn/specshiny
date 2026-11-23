@@ -1,0 +1,197 @@
+---
+title: "Getting Started with specshiny"
+output: rmarkdown::html_vignette
+vignette: >
+  %\VignetteIndexEntry{Getting Started with specshiny}
+  %\VignetteEngine{knitr::rmarkdown}
+  %\VignetteEncoding{UTF-8}
+---
+
+```{r, include = FALSE}
+knitr::opts_chunk$set(
+  collapse = TRUE,
+  comment = "#>"
+)
+```
+
+## Why Neuro-Symbolic Statistical Interfaces?
+
+When building Shiny applications for open-ended statistical workflows—such as
+Monte Carlo simulations, multilevel power analysis, or missing-data studies—you
+normally face an uncomfortable choice:
+
+1. **Expose every parameter statically**, resulting in a cluttered 300-control
+   cockpit where simple analyses drown in irrelevant options.
+2. **Restrict the app to fixed templates**, locking out researchers as soon as
+   they need a random slope, MAR attrition, or a parameter sweep.
+3. **Let an LLM emit and execute raw R code**, sacrificing reproducibility,
+   statistical guardrails, and security.
+
+`specshiny` breaks this trade-off with a four-stage **neuro-symbolic pipeline**:
+
+- **Natural Language -> Typed Specification IR (`spec_ir`)**: A pluggable
+  translator compiles English study descriptions into a declarative,
+  schema-validated JSON/YAML Intermediate Representation—never executing raw
+  model output.
+- **Schema & Statistical Sanity Guardrails**: Pure-R validation checks positive
+  variances, ICC bounds, random-slope identifiability, positive-definite
+  correlation matrices, missingness rates, and parameter-grid limits.
+- **Dynamic Minimal UI Synthesis**: `spec_to_controls()` and `bslib` Shiny
+  modules render *only* the controls active in the current specification,
+  bidirectionally synced with conversational edits and live change diffs.
+- **Deterministic Code & Report Compilation**: Audited templates compile any
+  validated `spec_ir` into readable, standalone R scripts and Quarto reports
+  with zero `eval(parse())` of untrusted strings.
+
+## 1. Compiling Natural Language to a Verified Specification
+
+Start offline with the deterministic rule-based translator (`translator_rule()`):
+
+```{r}
+library(specshiny)
+
+prompt <- paste(
+  "2-level multilevel power simulation with 60 schools, 25 students per school,",
+  "ICC 0.2, treatment effect 0.35, random slope for x1, 15% MAR missingness,",
+  "500 replications"
+)
+
+tr <- nl_to_spec(prompt)
+tr$spec
+```
+
+Every inferred default is documented transparently in `defaults_rationale`:
+
+```{r}
+tr$spec$defaults_rationale
+```
+
+And underspecified design choices are surfaced as structured `clarifications`
+rather than hidden silently:
+
+```{r}
+lapply(tr$clarifications, function(cl) {
+  sprintf("[%s] %s (default: %s)", cl$id, cl$question, cl$current_default)
+})
+```
+
+## 2. Answering Clarifications & Iterative Refinement
+
+Clarifications can be answered programmatically (or via the Shiny composer UI)
+using `answer_clarifications()`:
+
+```{r}
+clarified <- answer_clarifications(
+  tr,
+  answers = list(treatment_level = 2L, slope_sd_x1 = 0.25)
+)
+clarified$diff
+```
+
+Next, refine the study conversationally with `refine_spec()` and inspect the
+structured semantic diff:
+
+```{r}
+refined <- refine_spec(
+  clarified$spec,
+  "increase clusters to 80 and sweep ICC across 0.1, 0.2, 0.3"
+)
+refined$diff
+```
+
+## 3. Statistical Sanity Guardrails
+
+Before any specification can drive UI rendering or code generation,
+`validate_spec_ir()` verifies both schema structure and statistical
+identifiability. For instance, attempting to put a random slope on a
+cluster-constant level-2 predictor or supplying a non-positive-definite random
+effects correlation matrix is immediately caught:
+
+```{r}
+bad_spec <- refined$spec
+# Level-2 treatment cannot have a random slope across clusters:
+bad_spec$effects$random$slopes <- list(list(predictor = "treatment", sd = 0.2))
+# Non-positive-definite correlation matrix (eigenvalue = 0):
+bad_spec$effects$random$corr_matrix <- matrix(c(1, 1, 1, 1), nrow = 2, ncol = 2)
+
+val <- validate_spec_ir(bad_spec, strict = FALSE)
+val$valid
+val$errors[, c("path", "code", "category")]
+```
+
+## 4. Minimal Dynamic UI Synthesis
+
+Compare the synthesized UI surface of a simple single-level linear regression
+against our complex 2-level multilevel power design:
+
+```{r}
+simple_spec <- nl_to_spec(
+  "Single-level Monte Carlo simulation with 200 observations, x1 effect 0.4, 250 reps"
+)$spec
+
+d_simple <- spec_to_controls(simple_spec)
+d_mlm <- spec_to_controls(refined$spec)
+
+cat("Single-level active controls:", d_simple$control_count, "\n")
+cat("  IDs:", paste(d_simple$control_ids, collapse = ", "), "\n\n")
+cat("Multilevel + MAR + Grid active controls:", d_mlm$control_count, "\n")
+cat("  IDs:", paste(d_mlm$control_ids, collapse = ", "), "\n")
+```
+
+Notice that `d_simple` never shows `n_clusters`, `icc`, `slope_sd_*`,
+`missing_rate`, or `estimator_reml`. Complexity appears *only* when the study
+design requires it.
+
+## 5. Deterministic R Script & Quarto Report Compilation
+
+Any validated `spec_ir` compiles deterministically into a standalone R script
+and a reproducible Quarto `.qmd` report:
+
+```{r}
+# Compile a fast 1-level example and execute the generated script in isolation
+fast_spec <- new_spec_ir(
+  design_type = "power_analysis",
+  title = "Quick Power Verification",
+  hierarchy = list(levels = 1L, n_obs = 120L),
+  predictors = list(spec_predictor("trt", level = 1L, distribution = "binary", prob = 0.5, role = "treatment")),
+  effects = list(intercept = 0, fixed = list(trt = 0.5), focal_predictor = "trt"),
+  simulation = list(n_reps = 15L, seed = 2026L)
+)
+
+script_code <- compile_r_script(fast_spec)
+cat(substr(script_code, 1, 700), "...\n")
+```
+
+We can execute the generated standalone script in a clean environment to verify
+it runs end-to-end:
+
+```{r}
+tmp_r <- tempfile(fileext = ".R")
+compile_r_script(fast_spec, file = tmp_r)
+sim_env <- new.env(parent = globalenv())
+invisible(capture.output(sys.source(tmp_r, envir = sim_env)))
+unlink(tmp_r)
+
+sim_env$results$summary
+```
+
+And generating a full Quarto report (including LaTeX equations, audit table of
+defaults, YAML IR, and simulation chunks) takes one line:
+
+```{r}
+qmd_doc <- compile_quarto_report(refined$spec)
+cat(substr(qmd_doc, 1, 650), "...\n")
+```
+
+## 6. Saving & Sharing Specifications
+
+Specifications round-trip losslessly to YAML or JSON files:
+
+```{r}
+tmp_yaml <- tempfile(fileext = ".yaml")
+write_spec_ir(refined$spec, tmp_yaml)
+reloaded <- read_spec_ir(tmp_yaml)
+unlink(tmp_yaml)
+
+diff_spec_ir(refined$spec, reloaded)$has_changes
+```

@@ -1,0 +1,43 @@
+Package: specshiny
+Title: Neuro-Symbolic Specification Engine for Dynamic Shiny UIs
+Version: 0.1.0
+Authors@R:
+    person("Marcus", "Harris", , "marcus.harris.uconn@gmail.com", role = c("aut", "cre", "cph"))
+Description: Implements a neuro-symbolic architecture that compiles
+    natural-language descriptions of statistical and simulation studies into a
+    strictly schema-validated intermediate representation (IR) with statistical
+    sanity guardrails, dynamically synthesizes context-specific 'bslib' and
+    'Shiny' user interfaces with bidirectional synchronization and visual
+    change diffs, and deterministically compiles validated specifications into
+    standalone R scripts and 'Quarto' reports without evaluating untrusted
+    language model output.
+License: MIT + file LICENSE
+URL: https://github.com/MarcusHarrisUConn/specshiny
+BugReports: https://github.com/MarcusHarrisUConn/specshiny/issues
+Encoding: UTF-8
+Roxygen: list(markdown = TRUE)
+Config/testthat/edition: 3
+Depends:
+    R (>= 4.1.0)
+Imports:
+    bslib,
+    cli,
+    htmltools,
+    httr2,
+    jsonlite,
+    rlang,
+    shiny,
+    stats,
+    tools,
+    utils,
+    yaml
+Suggests:
+    ggplot2,
+    knitr,
+    lme4,
+    rmarkdown,
+    testthat (>= 3.0.0),
+    tibble,
+    withr
+VignetteBuilder: knitr
+Config/roxygen2/version: 8.1.0

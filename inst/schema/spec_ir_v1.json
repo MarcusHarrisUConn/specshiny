@@ -1,0 +1,167 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://github.com/MarcusHarrisUConn/specshiny/schema/spec_ir_v1.json",
+  "title": "specshiny Statistical & Simulation Specification IR v1.0.0",
+  "type": "object",
+  "required": [
+    "schema_version",
+    "metadata",
+    "design_type",
+    "hierarchy",
+    "predictors",
+    "outcome",
+    "effects",
+    "missingness",
+    "estimator",
+    "simulation",
+    "defaults_rationale"
+  ],
+  "additionalProperties": false,
+  "properties": {
+    "schema_version": {
+      "type": "string",
+      "const": "1.0.0"
+    },
+    "metadata": {
+      "type": "object",
+      "required": ["title", "description"],
+      "properties": {
+        "title": { "type": "string", "minLength": 1 },
+        "description": { "type": "string" },
+        "source_prompt": { "type": ["string", "null"] },
+        "tags": {
+          "type": "array",
+          "items": { "type": "string" }
+        }
+      }
+    },
+    "design_type": {
+      "type": "string",
+      "enum": ["monte_carlo_lm", "power_analysis", "multilevel_sim", "two_level_mlm"]
+    },
+    "hierarchy": {
+      "type": "object",
+      "required": ["levels", "unit_name"],
+      "properties": {
+        "levels": { "type": "integer", "enum": [1, 2] },
+        "n_obs": { "type": ["integer", "null"], "minimum": 5 },
+        "n_clusters": { "type": ["integer", "null"], "minimum": 3 },
+        "cluster_size": { "type": ["integer", "null"], "minimum": 2 },
+        "cluster_name": { "type": ["string", "null"], "pattern": "^[A-Za-z][A-Za-z0-9_]*$" },
+        "unit_name": { "type": "string", "pattern": "^[A-Za-z][A-Za-z0-9_]*$" },
+        "icc": { "type": ["number", "null"], "minimum": 0, "exclusiveMaximum": 1 }
+      }
+    },
+    "predictors": {
+      "type": "array",
+      "minItems": 1,
+      "items": {
+        "type": "object",
+        "required": ["name", "level", "distribution", "centering"],
+        "properties": {
+          "name": { "type": "string", "pattern": "^[A-Za-z][A-Za-z0-9_]*$" },
+          "level": { "type": "integer", "enum": [1, 2] },
+          "distribution": { "type": "string", "enum": ["normal", "binary", "uniform"] },
+          "mean": { "type": ["number", "null"] },
+          "sd": { "type": ["number", "null"], "exclusiveMinimum": 0 },
+          "prob": { "type": ["number", "null"], "exclusiveMinimum": 0, "exclusiveMaximum": 1 },
+          "min": { "type": ["number", "null"] },
+          "max": { "type": ["number", "null"] },
+          "centering": { "type": "string", "enum": ["none", "grand_mean", "group_mean"] },
+          "role": { "type": "string", "enum": ["focal", "treatment", "covariate"] }
+        }
+      }
+    },
+    "outcome": {
+      "type": "object",
+      "required": ["name", "family", "link"],
+      "properties": {
+        "name": { "type": "string", "pattern": "^[A-Za-z][A-Za-z0-9_]*$" },
+        "family": { "type": "string", "enum": ["gaussian", "binomial", "poisson"] },
+        "link": { "type": "string", "enum": ["identity", "logit", "probit", "log"] },
+        "residual_sd": { "type": ["number", "null"], "exclusiveMinimum": 0 }
+      }
+    },
+    "effects": {
+      "type": "object",
+      "required": ["intercept", "fixed", "focal_predictor", "random"],
+      "properties": {
+        "intercept": { "type": "number" },
+        "fixed": {
+          "type": "object",
+          "additionalProperties": { "type": "number" }
+        },
+        "focal_predictor": { "type": ["string", "null"] },
+        "random": {
+          "type": "object",
+          "required": ["intercept", "slopes"],
+          "properties": {
+            "intercept": { "type": "boolean" },
+            "intercept_sd": { "type": ["number", "null"], "minimum": 0 },
+            "slopes": {
+              "type": "array",
+              "items": {
+                "type": "object",
+                "required": ["predictor", "sd"],
+                "properties": {
+                  "predictor": { "type": "string", "pattern": "^[A-Za-z][A-Za-z0-9_]*$" },
+                  "sd": { "type": "number", "exclusiveMinimum": 0 }
+                }
+              }
+            },
+            "corr_matrix": {
+              "type": ["array", "null"],
+              "items": {
+                "type": "array",
+                "items": { "type": "number", "minimum": -1, "maximum": 1 }
+              }
+            }
+          }
+        }
+      }
+    },
+    "missingness": {
+      "type": "object",
+      "required": ["mechanism", "rate", "target"],
+      "properties": {
+        "mechanism": { "type": "string", "enum": ["none", "MCAR", "MAR"] },
+        "rate": { "type": "number", "minimum": 0, "exclusiveMaximum": 0.95 },
+        "target": { "type": "string" },
+        "auxiliary": { "type": ["string", "null"] },
+        "strength": { "type": ["number", "null"] }
+      }
+    },
+    "estimator": {
+      "type": "object",
+      "required": ["engine", "reml", "conf_level", "missing_handling"],
+      "properties": {
+        "engine": { "type": "string", "enum": ["lm", "glm", "lmer", "glmer"] },
+        "reml": { "type": "boolean" },
+        "conf_level": { "type": "number", "exclusiveMinimum": 0.5, "exclusiveMaximum": 1 },
+        "missing_handling": { "type": "string", "enum": ["complete_case"] }
+      }
+    },
+    "simulation": {
+      "type": "object",
+      "required": ["n_reps", "seed", "alpha", "parameter_grid"],
+      "properties": {
+        "n_reps": { "type": "integer", "minimum": 1, "maximum": 100000 },
+        "seed": { "type": "integer" },
+        "alpha": { "type": "number", "exclusiveMinimum": 0, "exclusiveMaximum": 0.5 },
+        "parameter_grid": {
+          "type": "object",
+          "additionalProperties": {
+            "type": "array",
+            "minItems": 1,
+            "maxItems": 20,
+            "items": { "type": "number" }
+          }
+        }
+      }
+    },
+    "defaults_rationale": {
+      "type": "object",
+      "additionalProperties": { "type": "string" }
+    }
+  }
+}

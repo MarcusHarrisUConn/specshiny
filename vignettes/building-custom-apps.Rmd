@@ -1,0 +1,149 @@
+---
+title: "Building Dynamic bslib & Shiny Apps with specshiny"
+output: rmarkdown::html_vignette
+vignette: >
+  %\VignetteIndexEntry{Building Dynamic bslib & Shiny Apps with specshiny}
+  %\VignetteEngine{knitr::rmarkdown}
+  %\VignetteEncoding{UTF-8}
+---
+
+```{r, include = FALSE}
+knitr::opts_chunk$set(
+  collapse = TRUE,
+  comment = "#>"
+)
+```
+
+## Modular Neuro-Symbolic App Architecture
+
+`specshiny` ships three composable `bslib`/Shiny modules that share a single
+reactive source of truth (`spec_rv`, holding a validated `spec_ir`) and a
+change-diff channel (`last_diff_rv`, holding the latest `spec_diff`):
+
+| Module | Role |
+| :--- | :--- |
+| `mod_spec_composer_ui()` / `mod_spec_composer_server()` | Natural-language prompt compilation, presets, iterative conversational refinement, clarification questions, and defaults rationale viewer |
+| `mod_spec_controls_ui()` / `mod_spec_controls_server()` | Dynamically renders *only* active `bslib` controls, pushes IR changes to widgets, validates UI edits through guardrails, and renders visual diff badges |
+| `mod_spec_preview_ui()` / `mod_spec_preview_server()` | Live mathematical summary, YAML/JSON IR inspector, deterministic R script, quick preview runner, Quarto `.qmd` report, and download handlers |
+
+## 1. Launching the Bundled Flagship Demo
+
+The fastest way to explore the complete workflow interactively is to run the
+bundled reference application:
+
+```{r, eval = FALSE}
+library(specshiny)
+run_specshiny_demo()
+```
+
+Or inspect the `shiny.appobj` directly:
+
+```{r}
+library(specshiny)
+app <- specshiny_demo_app()
+class(app)
+```
+
+## 2. Composing a Custom `bslib` Application
+
+Embedding `specshiny` inside your own `bslib` dashboard requires only wiring
+the shared `reactiveVal` pair across the modules:
+
+```{r, eval = FALSE}
+library(shiny)
+library(bslib)
+library(specshiny)
+
+# Swap translator_rule() for translator_openai() or translator_ollama() when desired
+translator <- translator_rule()
+initial <- nl_to_spec(
+  "2-level power study with 50 schools, 20 students per school, ICC 0.2, treatment effect 0.4",
+  translator = translator
+)$spec
+
+ui <- page_sidebar(
+  title = "Custom Multilevel Study Studio",
+  theme = bs_theme(version = 5, bootswatch = "flatly"),
+  sidebar = sidebar(
+    width = 380,
+    mod_spec_composer_ui("composer")
+  ),
+  layout_columns(
+    col_widths = c(6, 6),
+    mod_spec_controls_ui("controls"),
+    mod_spec_preview_ui("preview")
+  )
+)
+
+server <- function(input, output, session) {
+  spec_rv <- reactiveVal(initial)
+  last_diff_rv <- reactiveVal(NULL)
+
+  mod_spec_composer_server("composer", spec_rv = spec_rv, translator = translator, last_diff_rv = last_diff_rv)
+  mod_spec_controls_server("controls", spec_rv = spec_rv, last_diff_rv = last_diff_rv)
+  mod_spec_preview_server("preview", spec_rv = spec_rv, last_diff_rv = last_diff_rv)
+}
+
+shinyApp(ui, server)
+```
+
+## 3. Verifying Bidirectional Sync with `shiny::testServer()`
+
+Because all state transitions pass through validated `spec_ir` objects and
+idempotent diff checks, bidirectional synchronization between conversational
+refinements and visual widget tweaks is straightforward to test automatically
+with `shiny::testServer()`:
+
+```{r}
+init_spec <- nl_to_spec(
+  "2-level power study with 50 schools, 20 students per school, ICC 0.2, treatment effect 0.35, random slope for x1, 15% MAR missingness"
+)$spec
+
+spec_rv <- shiny::reactiveVal(init_spec)
+diff_rv <- shiny::reactiveVal(NULL)
+
+shiny::testServer(
+  mod_spec_controls_server,
+  args = list(spec_rv = spec_rv, last_diff_rv = diff_rv),
+  {
+    # 1. Visual slider/numeric tweak updates IR and populates semantic diff
+    session$setInputs(n_clusters = 75)
+    cat("After UI tweak -> n_clusters:", spec_rv()$hierarchy$n_clusters, "\n")
+    cat("Live diff summary:", format_diff_summary(diff_rv()), "\n")
+
+    # 2. Invalid edit (cluster_size = 2 with 2 random effects) is blocked by guardrails
+    session$setInputs(cluster_size = 2)
+    cat("Blocked edit kept cluster_size at:", spec_rv()$hierarchy$cluster_size, "\n")
+    cat("Guardrail message:", session$returned$guardrail_error()$errors$message[[1L]], "\n")
+
+    # 3. Structural edit (turning off missingness) immediately prunes missingness controls
+    session$setInputs(missing_mechanism = "none")
+    cat("Missingness rate control still present?",
+        "missing_rate" %in% session$returned$descriptor()$control_ids, "\n")
+  }
+)
+```
+
+## 4. Configuring Cloud & Local LLM Translators
+
+`specshiny` supports any OpenAI-compatible API (`translator_openai()`) as well
+as local Ollama models (`translator_ollama()`). Both adapters enforce JSON-only
+output using `spec_system_prompt()`, parse the JSON strictly with
+`jsonlite::fromJSON()` (never `eval(parse())`), and validate every returned
+specification through `validate_spec_ir()`:
+
+```{r}
+# Cloud API backend (reads OPENAI_API_KEY from environment by default)
+openai_backend <- translator_openai(model = "gpt-4o-mini")
+openai_backend
+
+# Local privacy-preserving Ollama backend
+ollama_backend <- translator_ollama(model = "llama3.1", base_url = "http://localhost:11434")
+ollama_backend
+```
+
+To inspect the exact schema instructions sent to external LLMs:
+
+```{r}
+cat(spec_system_prompt("create"))
+```
