@@ -353,7 +353,7 @@ verify_compiled_r_ast <- function(script, strict = FALSE) {
         sprintf("[%s | %s] %s", res$violations$code, res$violations$symbol, res$violations$message),
         rep("x", nrow(res$violations))
       )
-      cli::cli_abort(
+      rlang::abort(
         c("Compiled R script failed static AST safety verification:", bullets),
         class = "specshiny_ast_violation"
       )
@@ -543,7 +543,8 @@ print.spec_ast_verification <- function(x, ...) {
   } else {
     cli::cli_alert_danger("AST safety verification FAILED ({nrow(x$violations)} violation{?s}):")
     for (i in seq_len(nrow(x$violations))) {
-      cli::cli_bullets(c("x" = sprintf("[%s | %s] %s", x$violations$code[[i]], x$violations$symbol[[i]], x$violations$message[[i]])))
+      v_line <- sprintf("[%s | %s] %s", x$violations$code[[i]], x$violations$symbol[[i]], x$violations$message[[i]])
+      cli::cli_bullets(c("x" = "{v_line}"))
     }
   }
   invisible(x)

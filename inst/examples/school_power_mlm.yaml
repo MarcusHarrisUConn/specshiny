@@ -1,4 +1,4 @@
-schema_version: 1.1.0
+schema_version: 1.2.0
 metadata:
   title: 2-Level School Linear Power Simulation (Random Slopes, MAR Missingness)
   description: Compiled from natural-language prompt via rule-based translator.
@@ -18,6 +18,8 @@ hierarchy:
   cluster_size: 25
   cluster_size_dist: fixed
   cluster_size_sd: ~
+  time_points: ~
+  time_spacing: ~
   cluster_name: school
   unit_name: student
   icc: 0.2
@@ -51,6 +53,7 @@ outcome:
   error_dist: normal
   error_df: ~
   error_skew: ~
+  ar1_rho: ~
 effects:
   intercept: 0.0
   fixed:

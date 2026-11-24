@@ -12,12 +12,14 @@ Complex statistical Shiny applications—such as generalized Monte Carlo simulat
 Natural Language Prompt / Refinements
    │
    ▼  (Pluggable: Rule-Based Offline | OpenAI-Compatible API | Local Ollama)
-Typed Specification IR (`spec_ir` v1.1.0 — JSON / YAML, forward-compatible migration)
+Typed Specification IR (`spec_ir` v1.2.0 — JSON / YAML, chained forward migration)
    │
-   ▼  (Strict Schema + Statistical Sanity Guardrails: PD matrices, identifiability, bounds)
+   ▼  (Strict Schema + Statistical Sanity Guardrails: PD matrices, AR(1) stationarity, identifiability)
    ├──▶ Dynamic `bslib`/Shiny UI Synthesizer (renders ONLY active controls + Undo/Redo + diffs)
    │        ▲
    │        └── Bidirectional Sync (UI tweaks ⇄ Conversational edits, loop-free)
+   │
+   ├──▶ Multi-Scenario Design Comparison & Domain Templates (`compare_specs()`, `use_spec_template()`)
    │
    └──▶ Deterministic Code, Report & Bundle Compiler (Standalone R + Quarto + SHA-256 Bundle)
             (Mandatory static AST safety gate `verify_compiled_r_ast()`; zero `eval(parse())`)
@@ -27,9 +29,12 @@ See [ARCHITECTURE.md](ARCHITECTURE.md) and [SECURITY.md](SECURITY.md) for the co
 
 ## Key Features
 
-- **Typed IR Grammar, Migration & Statistical Guardrails (`new_spec_ir()`, `spec_predictor()`, `spec_interaction()`, `validate_spec_ir()`, `migrate_spec_ir()`, `diff_spec_ir()`):**
-  - Models 1-level and 2-level hierarchical designs (`monte_carlo_lm`, `power_analysis`, `multilevel_sim`, `two_level_mlm`), predictor distributions & centering, correlated predictors (`predictor_corr`), two-way & cross-level interactions (`x1:z1`), unbalanced cluster sizes (`fixed`/`normal`/`poisson`), Gaussian/Binomial/Poisson outcomes, heavy-tailed Student-t and skewed level-1 errors, random intercepts & slopes with correlation matrices, MCAR/MAR missingness, estimators (`lm`, `glm`, `lmer`, `glmer`), parameter grid sweeps, and transparent `defaults_rationale`.
-  - Pure-R schema and statistical sanity checks catch unknown nested properties, non-ASCII/reserved identifiers, non-positive variances, invalid ICCs, unidentifiable level-2 random slopes, insufficient cluster sizes, non-positive-definite correlation matrices (via eigenvalues), invalid missingness bounds, and combinatorial grid explosions.
+- **Typed IR Grammar, Longitudinal Growth & Statistical Guardrails (`new_spec_ir()`, `spec_predictor()`, `spec_interaction()`, `validate_spec_ir()`, `migrate_spec_ir()`, `diff_spec_ir()`):**
+  - Models 1-level, 2-level hierarchical, and repeated-measures longitudinal growth designs (`monte_carlo_lm`, `power_analysis`, `multilevel_sim`, `two_level_mlm`, `longitudinal_growth`), wave schedules (`time_points`, `time_spacing`), predictor distributions & centering, correlated predictors (`predictor_corr`), two-way & cross-level interactions (`x1:z1`, `time:treatment`), unbalanced cluster sizes (`fixed`/`normal`/`poisson`), Gaussian/Binomial/Poisson outcomes, heavy-tailed Student-t and skewed level-1 errors, stationary within-subject AR(1) residual autocorrelation (`ar1_rho`), random intercepts & slopes with correlation matrices, MCAR/MAR/`monotone_dropout` missingness, estimators (`lm`, `glm`, `lmer`, `glmer`), parameter grid sweeps, and transparent `defaults_rationale`.
+  - Pure-R schema and statistical sanity checks catch unknown nested properties, non-ASCII/reserved identifiers, non-positive variances, invalid ICCs, non-stationary AR(1) bounds (`|ar1_rho| >= 0.95`), unidentifiable level-2 random slopes, insufficient cluster sizes, non-positive-definite correlation matrices (via eigenvalues), invalid missingness bounds, and combinatorial grid explosions.
+- **Multi-Scenario Design Comparison & Template Registry (`compare_specs()`, `list_spec_templates()`, `use_spec_template()`, `register_spec_template()`):**
+  - Compare 2+ competing study designs side-by-side by total $N$, Kish / Eldridge-Ashby-Kerry design effect ($\text{DEFF}$), effective sample size ($N_{\text{eff}}$), variance decomposition, semantic IR diffs, and optional comparative preview power (`run_power = TRUE`).
+  - Ships 5 AST-verified built-in domain templates (`cluster_rct`, `cross_level_mlm`, `longitudinal_growth_ar1`, `logistic_power`, `factorial_ols`) plus safe custom template registration gated by `validate_spec_ir()` and `verify_compiled_r_ast()`.
 - **Pluggable Natural-Language Translator (`nl_to_spec()`, `refine_spec()`, `answer_clarifications()`):**
   - Ships a deterministic offline parser (`translator_rule()`), an OpenAI-compatible HTTP adapter (`translator_openai()`), and a local Ollama adapter (`translator_ollama()`) with API key masking, URL validation, and response byte caps.
   - Surfaces structured clarifying questions for underspecified parameters and records plain-language rationales for every default.
@@ -87,6 +92,7 @@ run_specshiny_demo()
 - Online documentation site: <https://marcusharrisphd.com/specshiny/>
 - `vignette("getting-started", package = "specshiny")` — End-to-end neuro-symbolic workflow from English prompts to executed R scripts and Quarto reports.
 - `vignette("multilevel-power-walkthrough", package = "specshiny")` — Full 2-level cross-level interaction, unbalanced cluster size, and heavy-tailed error power study walkthrough.
+- `vignette("longitudinal-and-templates", package = "specshiny")` — Longitudinal growth curves with AR(1) autocorrelation and monotone dropout, `compare_specs()` design efficiency analysis, and custom template registration.
 - `vignette("building-custom-apps", package = "specshiny")` — Composing dynamic `bslib`/Shiny apps with undo/redo history, preview budget caps, `testServer()`, and OpenAI/Ollama translators.
 - `vignette("ir-schema-and-safety", package = "specshiny")` — Closed IR allowlists, schema migration, static AST verification, Quarto/LaTeX/XSS defenses, and SHA-256 study bundles.
 - [ARCHITECTURE.md](ARCHITECTURE.md) — Formal IR specification, validation guardrails, and design invariants.

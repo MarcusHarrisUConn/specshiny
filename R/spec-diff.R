@@ -165,7 +165,7 @@ flatten_spec_for_diff <- function(spec, ignore_rationale = TRUE, ignore_metadata
   }
 
   if (is.list(spec$hierarchy)) {
-    for (k in c("levels", "n_obs", "n_clusters", "cluster_size", "cluster_size_dist", "cluster_size_sd", "cluster_name", "unit_name", "icc")) {
+    for (k in c("levels", "n_obs", "n_clusters", "cluster_size", "cluster_size_dist", "cluster_size_sd", "time_points", "time_spacing", "cluster_name", "unit_name", "icc")) {
       add_val(paste0("hierarchy.", k), spec$hierarchy[[k]])
     }
   }
@@ -189,7 +189,7 @@ flatten_spec_for_diff <- function(spec, ignore_rationale = TRUE, ignore_metadata
   }
 
   if (is.list(spec$outcome)) {
-    for (k in c("name", "family", "link", "residual_sd", "error_dist", "error_df", "error_skew")) {
+    for (k in c("name", "family", "link", "residual_sd", "error_dist", "error_df", "error_skew", "ar1_rho")) {
       add_val(paste0("outcome.", k), spec$outcome[[k]])
     }
   }

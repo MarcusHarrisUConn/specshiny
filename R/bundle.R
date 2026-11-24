@@ -74,7 +74,7 @@ export_spec_bundle <- function(spec,
 
   pkg_ver <- tryCatch(
     as.character(utils::packageVersion("specshiny")),
-    error = function(e) "0.3.0"
+    error = function(e) "0.4.0"
   )
 
   manifest <- list(

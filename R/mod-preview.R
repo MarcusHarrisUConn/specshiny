@@ -295,19 +295,31 @@ run_spec_preview_sim <- function(spec,
   }
 
   levels_val <- as.integer(spec$hierarchy$levels)
+  is_long <- identical(spec$design_type, "longitudinal_growth")
   eff_n_obs <- if (levels_val == 1L) as.integer(spec$hierarchy$n_obs) else NA_integer_
   eff_n_cl <- if (levels_val == 2L) as.integer(spec$hierarchy$n_clusters) else NA_integer_
   eff_cs <- if (levels_val == 2L) as.integer(spec$hierarchy$cluster_size) else NA_integer_
+  eff_cs_sd <- if (levels_val == 2L && !is.null(spec$hierarchy$cluster_size_sd)) {
+    as.numeric(spec$hierarchy$cluster_size_sd)
+  } else {
+    NA_real_
+  }
 
   total_n_orig <- spec_total_n(spec)
   if (is.finite(total_n_orig) && total_n_orig > as.integer(max_n)) {
     if (levels_val == 1L) {
       eff_n_obs <- as.integer(max_n)
+    } else if (is_long) {
+      q_min <- max(3L, as.integer(isTRUE(spec$effects$random$intercept)) + length(spec$effects$random$slopes %||% list()) + 2L)
+      eff_n_cl <- max(q_min, as.integer(floor(as.numeric(max_n) / as.numeric(eff_cs))))
     } else {
       scale_f <- sqrt(as.numeric(max_n) / as.numeric(total_n_orig))
       q_min <- max(3L, as.integer(isTRUE(spec$effects$random$intercept)) + length(spec$effects$random$slopes %||% list()) + 2L)
       eff_n_cl <- max(q_min, as.integer(floor(eff_n_cl * scale_f)))
       eff_cs <- max(q_min, as.integer(floor(eff_cs * scale_f)))
+      if (is.finite(eff_cs_sd)) {
+        eff_cs_sd <- max(0.5, eff_cs_sd * scale_f)
+      }
     }
     warns <- c(
       warns,
@@ -341,16 +353,19 @@ run_spec_preview_sim <- function(spec,
       cs_dist <- spec$hierarchy$cluster_size_dist %||% "fixed"
       min_nj <- max(2L, as.integer(isTRUE(spec$effects$random$intercept)) + length(spec$effects$random$slopes %||% list()) + 1L)
       if (identical(cs_dist, "normal")) {
-        csizes <- pmax(min_nj, as.integer(round(stats::rnorm(n_cl, mean = cs, sd = as.numeric(spec$hierarchy$cluster_size_sd)))))
+        csizes <- pmax(min_nj, as.integer(round(stats::rnorm(n_cl, mean = cs, sd = eff_cs_sd))))
         n <- sum(csizes)
         cluster_idx <- rep(seq_len(n_cl), times = csizes)
+        wave_idx <- NULL
       } else if (identical(cs_dist, "poisson")) {
         csizes <- pmax(min_nj, stats::rpois(n_cl, lambda = cs))
         n <- sum(csizes)
         cluster_idx <- rep(seq_len(n_cl), times = csizes)
+        wave_idx <- NULL
       } else {
         n <- n_cl * cs
         cluster_idx <- rep(seq_len(n_cl), each = cs)
+        wave_idx <- if (is_long) rep(seq_len(cs), times = n_cl) else NULL
       }
       dat <- stats::setNames(data.frame(factor(cluster_idx)), spec$hierarchy$cluster_name)
     }
@@ -371,6 +386,7 @@ run_spec_preview_sim <- function(spec,
           zv <- Z[, pos]
           vals <- switch(
             p$distribution,
+            time = as.numeric(spec$hierarchy$time_spacing)[wave_idx],
             normal = p$mean + p$sd * zv,
             binary = as.integer(stats::pnorm(zv) < p$prob),
             uniform = p$min + (p$max - p$min) * stats::pnorm(zv)
@@ -392,6 +408,7 @@ run_spec_preview_sim <- function(spec,
         dn <- if (is_l2) eff_n_cl else n
         vals <- switch(
           p$distribution,
+          time = as.numeric(spec$hierarchy$time_spacing)[wave_idx],
           normal = stats::rnorm(dn, mean = p$mean, sd = p$sd),
           binary = stats::rbinom(dn, size = 1L, prob = p$prob),
           uniform = stats::runif(dn, min = p$min, max = p$max)
@@ -448,16 +465,30 @@ run_spec_preview_sim <- function(spec,
     dat[[y_name]] <- if (fam == "gaussian") {
       edist <- spec$outcome$error_dist %||% "normal"
       rsd <- as.numeric(spec$outcome$residual_sd)
-      if (identical(edist, "t")) {
+      eps_innov <- if (identical(edist, "t")) {
         df_v <- as.numeric(spec$outcome$error_df)
-        eta + rsd * stats::rt(n, df = df_v) * sqrt((df_v - 2) / df_v)
+        rsd * stats::rt(n, df = df_v) * sqrt((df_v - 2) / df_v)
       } else if (identical(edist, "skewed")) {
         sk_v <- as.numeric(spec$outcome$error_skew)
         k_sh <- 4 / (sk_v^2)
-        eta + rsd * sign(sk_v) * (stats::rgamma(n, shape = k_sh, rate = 1) - k_sh) / sqrt(k_sh)
+        rsd * sign(sk_v) * (stats::rgamma(n, shape = k_sh, rate = 1) - k_sh) / sqrt(k_sh)
       } else {
-        stats::rnorm(n, eta, rsd)
+        stats::rnorm(n, 0, rsd)
       }
+      eps <- eps_innov
+      rho <- as.numeric(spec$outcome$ar1_rho %||% 0)
+      if (is_long && is.finite(rho) && abs(rho) > 0 && eff_cs >= 2L) {
+        t_sp <- as.numeric(spec$hierarchy$time_spacing)
+        for (s_i in seq_len(eff_n_cl)) {
+          idx_s <- ((s_i - 1L) * eff_cs + 1L):(s_i * eff_cs)
+          for (w_t in 2L:eff_cs) {
+            dt_w <- if (rho >= 0) t_sp[w_t] - t_sp[w_t - 1L] else 1
+            phi_w <- if (rho >= 0) rho^dt_w else rho
+            eps[idx_s[w_t]] <- phi_w * eps[idx_s[w_t - 1L]] + sqrt(1 - phi_w^2) * eps_innov[idx_s[w_t]]
+          }
+        }
+      }
+      eta + eps
     } else if (fam == "binomial" && lnk == "logit") {
       stats::rbinom(n, 1L, stats::plogis(eta))
     } else if (fam == "binomial" && lnk == "probit") {
@@ -479,6 +510,31 @@ run_spec_preview_sim <- function(spec,
         error = function(e) stats::qlogis(tr)
       )
       dat[[y_name]][stats::rbinom(n, 1L, stats::plogis(a0 + g * az)) == 1L] <- NA
+    } else if (identical(spec$missingness$mechanism, "monotone_dropout") && spec$missingness$rate > 0 && is_long) {
+      tr <- as.numeric(spec$missingness$rate)
+      h_base <- 1 - (1 - tr)^(1 / (eff_cs - 1L))
+      if (!is.null(spec$missingness$auxiliary)) {
+        base_idx <- seq.int(1L, n, by = eff_cs)
+        ax_s <- as.numeric(dat[[spec$missingness$auxiliary]][base_idx])
+        asd_s <- stats::sd(ax_s)
+        az_s <- if (is.finite(asd_s) && asd_s > 0) (ax_s - mean(ax_s)) / asd_s else rep(0, eff_n_cl)
+        g <- as.numeric(spec$missingness$strength %||% 1.0)
+        a0 <- tryCatch(
+          stats::uniroot(function(a) mean(stats::plogis(a + g * az_s)) - h_base, c(-25, 25))$root,
+          error = function(e) stats::qlogis(h_base)
+        )
+        h_vec <- stats::plogis(a0 + g * az_s)
+      } else {
+        h_vec <- rep(h_base, eff_n_cl)
+      }
+      for (s_i in seq_len(eff_n_cl)) {
+        idx_s <- ((s_i - 1L) * eff_cs + 1L):(s_i * eff_cs)
+        dropped <- FALSE
+        for (w_t in 2L:eff_cs) {
+          if (!dropped && stats::rbinom(1L, 1L, h_vec[s_i]) == 1L) dropped <- TRUE
+          if (dropped) dat[[y_name]][idx_s[w_t]] <- NA
+        }
+      }
     }
 
     dat_cc <- stats::na.omit(dat)

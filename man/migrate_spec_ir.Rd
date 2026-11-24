@@ -10,7 +10,7 @@ migrate_spec_ir(spec, target_version = SPEC_SCHEMA_VERSION, validate = TRUE)
 \item{spec}{A \code{spec_ir} object or named list deserialized from YAML/JSON.}
 
 \item{target_version}{Character scalar target schema version (defaults to
-\code{"1.1.0"}).}
+\code{"1.2.0"}).}
 
 \item{validate}{Logical; if \code{TRUE} (default), validates the migrated spec
 with \code{\link[=assert_valid_spec_ir]{assert_valid_spec_ir()}}.}
@@ -20,18 +20,19 @@ A validated \code{spec_ir} object at \code{target_version}, with a character
 vector \code{attr(result, "migration_log")} recording applied migration steps.
 }
 \description{
-Performs forward-compatible schema migration from earlier IR versions (e.g.,
-\code{"1.0.0"}) to the current canonical schema version (\code{"1.1.0"}), populating
-newly introduced fields with explicit backwards-compatible defaults and
-attaching an audit trail in \code{attr(result, "migration_log")}. Provides crisp
-version-mismatch diagnostics when given an unrecognized or newer future
-schema version.
+Performs forward-compatible chained schema migration across IR versions
+(\code{"1.0.0"} -> \code{"1.1.0"} -> \code{"1.2.0"}), populating newly introduced fields
+with explicit backwards-compatible defaults and attaching an audit trail in
+\code{attr(result, "migration_log")}. Provides crisp \code{specshiny_version_mismatch}
+diagnostics when given an unrecognized or newer future schema version.
 }
 \examples{
 legacy <- new_spec_ir(validate = FALSE)
 legacy$schema_version <- "1.0.0"
 legacy$hierarchy$cluster_size_dist <- NULL
+legacy$hierarchy$time_points <- NULL
 legacy$outcome$error_dist <- NULL
+legacy$outcome$ar1_rho <- NULL
 legacy$effects$interactions <- NULL
 upgraded <- migrate_spec_ir(legacy)
 upgraded$schema_version

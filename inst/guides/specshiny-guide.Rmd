@@ -1,6 +1,6 @@
 ---
 title: "specshiny: Neuro-Symbolic Specification & Dynamic Shiny UI Architecture Guide"
-subtitle: "Practitioner Reference & Field Guide (v0.3.0)"
+subtitle: "Practitioner Reference & Field Guide (v0.4.0)"
 author: "Marcus Harris"
 date: "2026"
 output:
@@ -33,16 +33,17 @@ language-model output:
 [Plain-English Prompt / Refinements]
         |
         v  Pluggable Translator (translator_rule / translator_openai / translator_ollama)
-[Typed Specification IR: spec_ir v1.1.0 (YAML / JSON)]
+[Typed Specification IR: spec_ir v1.2.0 (YAML / JSON)]
         |
         v  Pure-R Schema & Statistical Sanity Validator (validate_spec_ir)
         +----------------------------------------------+
         |                                              |
         v                                              v
-[Dynamic Minimal bslib/Shiny UI]             [Deterministic Compilers]
+[Dynamic Minimal bslib/Shiny UI]             [Deterministic Compilers & Tools]
 - spec_to_controls() (active only)           - compile_r_script() (AST-verified)
 - mod_spec_composer_* / controls_*           - compile_quarto_report() (sanitized)
 - spec_history() Undo / Redo + Diffs         - export_spec_bundle() (SHA-256)
+                                             - compare_specs() & Templates
 ```
 
 ## Trust Boundaries & Safety Guarantees
@@ -65,15 +66,15 @@ language-model output:
    LaTeX directives (`\write18`, `\input`, `\immediate`), and escapes HTML
    angle brackets.
 
-# Specification Grammar (`spec_ir` v1.1.0) Cheat Sheet
+# Specification Grammar (`spec_ir` v1.2.0) Cheat Sheet
 
 | Section | Core Fields | Guardrails Enforced |
 | :--- | :--- | :--- |
-| `hierarchy` | `levels` (1 or 2), `n_obs`, `n_clusters`, `cluster_size`, `cluster_size_dist` (`fixed`/`normal`/`poisson`), `cluster_size_sd`, `icc` | `n_obs >= 5`; `n_clusters >= 3`; `cluster_size > q_rand`; `icc` in `[0, 1)`; `cluster_size_sd > 0` |
-| `predictors` | `name`, `level`, `distribution` (`normal`/`binary`/`uniform`), `centering`, `role` + optional `predictor_corr` | Pure ASCII identifiers; unique names; `sd > 0`; `0 < prob < 1`; `min < max`; PD `predictor_corr` (same-level only) |
-| `outcome` | `name`, `family` (`gaussian`/`binomial`/`poisson`), `link`, `residual_sd`, `error_dist` (`normal`/`t`/`skewed`), `error_df`, `error_skew` | Valid family-link pair; `residual_sd > 0`; `error_df > 2`; `error_skew` in `[-4, 4] \ {0}` |
+| `hierarchy` | `levels` (1 or 2), `n_obs`, `n_clusters`, `cluster_size`, `cluster_size_dist` (`fixed`/`normal`/`poisson`), `cluster_size_sd`, `time_points`, `time_spacing`, `icc` | `n_obs >= 5`; `n_clusters >= 3`; `cluster_size > q_rand`; `time_points >= 3` with strictly increasing `time_spacing`; `icc` in `[0, 1)` |
+| `predictors` | `name`, `level`, `distribution` (`normal`/`binary`/`uniform`/`time`), `centering`, `role` + optional `predictor_corr` | Pure ASCII identifiers; unique names; `sd > 0`; `0 < prob < 1`; `min < max`; `time` level-1 longitudinal only; PD same-level `predictor_corr` |
+| `outcome` | `name`, `family` (`gaussian`/`binomial`/`poisson`), `link`, `residual_sd`, `error_dist` (`normal`/`t`/`skewed`), `error_df`, `error_skew`, `ar1_rho` | Valid family-link pair; `residual_sd > 0`; `error_df > 2`; `error_skew` in `[-4, 4] \ {0}`; `abs(ar1_rho) < 0.95` (longitudinal Gaussian) |
 | `effects` | `intercept`, `fixed`, `interactions` (`spec_interaction()`), `focal_predictor`, `random` (`intercept`, `slopes`, `corr_matrix`) | Level-1 predictors only for random slopes; PD `corr_matrix`; distinct interaction terms |
-| `missingness` | `mechanism` (`none`/`MCAR`/`MAR`), `rate`, `target`, `auxiliary`, `strength` | `rate` in `[0, 0.95)`; `rate == 0` when `none`; MAR requires valid `auxiliary` and non-zero `strength` |
+| `missingness` | `mechanism` (`none`/`MCAR`/`MAR`/`monotone_dropout`), `rate`, `target`, `auxiliary`, `strength` | `rate` in `[0, 0.95)`; `rate == 0` when `none`; MAR requires valid `auxiliary` and non-zero `strength`; `monotone_dropout` longitudinal only |
 | `estimator` | `engine` (`lm`/`glm`/`lmer`/`glmer`), `reml`, `conf_level` | Family/level/random-effects compatibility; `conf_level` in `(0.5, 1)` |
 | `simulation` | `n_reps`, `seed`, `alpha`, `parameter_grid` | `n_reps` in `[1, 100000]`; `alpha` in `(0, 0.5)`; grid cardinality `<= 250` |
 
@@ -118,6 +119,22 @@ export_spec_bundle(ref$spec, bdir, overwrite = TRUE)
 ver <- verify_spec_bundle(bdir)
 ver$valid
 unlink(bdir, recursive = TRUE)
+```
+
+## 4. Longitudinal Growth Curves, Design Comparisons & Templates
+
+`specshiny` v0.4.0 adds longitudinal growth modeling with stationary within-subject
+AR(1) errors and monotone dropout, side-by-side design comparison via
+`compare_specs()`, and an AST-gated domain template registry:
+
+```{r v04-guide-demo}
+s_ols  <- use_spec_template("factorial_ols", n_obs = 400L)
+s_crt  <- use_spec_template("cluster_rct", n_clusters = 40L, cluster_size = 10L)
+s_long <- use_spec_template("longitudinal_growth_ar1", n_clusters = 80L, ar1_rho = 0.50)
+
+cmp <- compare_specs(ols = s_ols, crt = s_crt, growth = s_long)
+as.data.frame(cmp)[, c("scenario", "total_n", "icc", "deff", "n_eff", "ar1_rho")]
+list_spec_templates()[, c("name", "category", "design_type", "estimator")]
 ```
 
 # Composing Dynamic `bslib` / Shiny Apps

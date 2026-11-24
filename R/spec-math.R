@@ -239,9 +239,22 @@ spec_to_math <- function(spec) {
     }
   }
 
+  if (identical(spec$design_type, "longitudinal_growth") &&
+      !is.null(spec$outcome$ar1_rho) && abs(as.numeric(spec$outcome$ar1_rho)) > 0) {
+    lines <- c(
+      lines,
+      sprintf("\\text{Autocorrelation:} &\\quad \\text{Corr}(\\varepsilon_{tj}, \\varepsilon_{t-1,j}) = \\rho = %s \\; (\\text{AR(1)}, \\; T = %d \\text{ waves})",
+              format(round(as.numeric(spec$outcome$ar1_rho), 3), trim = TRUE),
+              as.integer(spec$hierarchy$time_points))
+    )
+  }
+
   if (!identical(spec$missingness$mechanism, "none")) {
     miss_line <- if (identical(spec$missingness$mechanism, "MCAR")) {
       sprintf("\\text{Missingness:} &\\quad \\text{MCAR on } \\text{%s}, \\; P(R = 1) = %s",
+              y_tex, format(round(spec$missingness$rate, 3), trim = TRUE))
+    } else if (identical(spec$missingness$mechanism, "monotone_dropout")) {
+      sprintf("\\text{Missingness:} &\\quad \\text{Monotone dropout on } \\text{%s} \\; (\\text{cumulative attrition} = %s)",
               y_tex, format(round(spec$missingness$rate, 3), trim = TRUE))
     } else {
       sprintf("\\text{Missingness:} &\\quad \\text{MAR on } \\text{%s} \\text{ via } \\text{%s} \\; (\\text{rate} = %s, \\; \\gamma = %s)",

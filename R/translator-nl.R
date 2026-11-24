@@ -230,7 +230,12 @@ translate_prompt_backend.spec_translator_rule <- function(translator, prompt) {
   cluster_re <- paste(cluster_nouns, collapse = "|")
   unit_re <- paste(unit_nouns, collapse = "|")
 
-  is_multilevel <- grepl(
+  is_longitudinal <- grepl(
+    "\\b(longitudinal|growth[- ]?curve|repeated[- ]?measures|panel\\s+study|ar\\(1\\)|ar1|autocorrelation|monotone\\s+(?:dropout|attrition)|\\d+\\s+(?:waves?|time[- ]?points?|occasions?))\\b",
+    low, perl = TRUE
+  )
+
+  is_multilevel <- is_longitudinal || grepl(
     "\\b(2[- ]?level|two[- ]?level|multilevel|multi[- ]?level|hierarchical|nested|mixed[- ]?effects?|mlm|hlm|icc|intraclass|random\\s+(?:intercept|slope))\\b",
     low, perl = TRUE
   ) || grepl(sprintf("\\b\\d+\\s+(?:%s)\\b", cluster_re), low, perl = TRUE) ||
@@ -240,7 +245,9 @@ translate_prompt_backend.spec_translator_rule <- function(translator, prompt) {
   is_power <- grepl("\\b(power|sample\\s+size\\s+plan|detect\\s+effect)\\b", low, perl = TRUE)
   is_mlm_explicit <- grepl("\\b(two[- ]?level\\s+mlm|2[- ]?level\\s+mlm)\\b", low, perl = TRUE)
 
-  design_type <- if (is_power) {
+  design_type <- if (is_longitudinal) {
+    "longitudinal_growth"
+  } else if (is_power) {
     "power_analysis"
   } else if (is_mlm_explicit) {
     "two_level_mlm"
@@ -256,23 +263,46 @@ translate_prompt_backend.spec_translator_rule <- function(translator, prompt) {
   n_obs <- NULL
   n_clusters <- NULL
   cluster_size <- NULL
-  cluster_name <- "cluster"
-  unit_name <- "observation"
+  time_points <- NULL
+  time_spacing <- NULL
+  cluster_name <- if (is_longitudinal) "subject" else "cluster"
+  unit_name <- if (is_longitudinal) "wave" else "observation"
   icc <- NULL
 
   if (levels_val == 2L) {
-    # Cluster count e.g., "60 schools", "J = 50", "50 clusters"
-    m_cl <- reg_capture(sprintf("\\b(\\d+)\\s+(%s)\\b", cluster_re), low)
-    if (!is.null(m_cl)) {
-      n_clusters <- as.integer(m_cl[[1L]])
-      cluster_name <- singularize_noun(m_cl[[2L]])
-      mark_parsed("hierarchy.n_clusters")
-      mark_parsed("hierarchy.cluster_name")
-    } else {
-      m_j <- reg_capture("\\b(?:j|n_clusters|clusters)\\s*(?:=|of|is)?\\s*(\\d+)\\b", low)
-      if (!is.null(m_j)) {
-        n_clusters <- as.integer(m_j[[1L]])
+    if (is_longitudinal) {
+      # Subjects / participants / patients count
+      m_subj <- reg_capture("\\b(\\d+)\\s+(subjects?|participants?|patients?|individuals?|people|persons?|respondents?)\\b", low)
+      if (!is.null(m_subj)) {
+        n_clusters <- as.integer(m_subj[[1L]])
+        cluster_name <- singularize_noun(m_subj[[2L]])
         mark_parsed("hierarchy.n_clusters")
+        mark_parsed("hierarchy.cluster_name")
+      }
+      # Waves / timepoints
+      m_tw <- reg_capture("\\b(\\d+)\\s+(?:repeated\\s+)?(?:waves?|time[- ]?points?|occasions?|visits?)\\b", low)
+      if (!is.null(m_tw)) {
+        time_points <- as.integer(m_tw[[1L]])
+        cluster_size <- time_points
+        mark_parsed("hierarchy.time_points")
+        mark_parsed("hierarchy.cluster_size")
+      }
+    }
+
+    # Cluster count e.g., "60 schools", "J = 50", "50 clusters"
+    if (is.null(n_clusters)) {
+      m_cl <- reg_capture(sprintf("\\b(\\d+)\\s+(%s)\\b", cluster_re), low)
+      if (!is.null(m_cl)) {
+        n_clusters <- as.integer(m_cl[[1L]])
+        cluster_name <- singularize_noun(m_cl[[2L]])
+        mark_parsed("hierarchy.n_clusters")
+        mark_parsed("hierarchy.cluster_name")
+      } else {
+        m_j <- reg_capture("\\b(?:j|n_clusters|clusters)\\s*(?:=|of|is)?\\s*(\\d+)\\b", low)
+        if (!is.null(m_j)) {
+          n_clusters <- as.integer(m_j[[1L]])
+          mark_parsed("hierarchy.n_clusters")
+        }
       }
     }
 
@@ -318,18 +348,23 @@ translate_prompt_backend.spec_translator_rule <- function(translator, prompt) {
     }
 
     if (is.null(n_clusters)) {
-      n_clusters <- 40L
-      rationale[["hierarchy.n_clusters"]] <- "Number of clusters was not specified; defaulted to 40 clusters for stable random-effects estimation."
+      n_clusters <- if (is_longitudinal) 100L else 40L
+      rationale[["hierarchy.n_clusters"]] <- sprintf("Number of level-2 %ss was not specified; defaulted to %d.", cluster_name, n_clusters)
       add_clarif("n_clusters", "hierarchy.n_clusters",
                  sprintf("How many %ss (level-2 clusters) should be simulated?", cluster_name),
                  n_clusters, c(20L, 40L, 60L, 100L), rationale[["hierarchy.n_clusters"]])
     }
     if (is.null(cluster_size)) {
-      cluster_size <- 20L
-      rationale[["hierarchy.cluster_size"]] <- "Cluster size was not specified; defaulted to 20 units per cluster."
+      cluster_size <- if (is_longitudinal) 5L else 20L
+      if (is_longitudinal) time_points <- cluster_size
+      rationale[["hierarchy.cluster_size"]] <- sprintf("Cluster/wave size was not specified; defaulted to %d.", cluster_size)
       add_clarif("cluster_size", "hierarchy.cluster_size",
-                 sprintf("How many %ss per %s (level-1 cluster size)?", unit_name, cluster_name),
-                 cluster_size, c(10L, 20L, 30L, 50L), rationale[["hierarchy.cluster_size"]])
+                 sprintf("How many %ss per %s?", unit_name, cluster_name),
+                 cluster_size, if (is_longitudinal) c(4L, 5L, 6L, 8L) else c(10L, 20L, 30L, 50L), rationale[["hierarchy.cluster_size"]])
+    }
+    if (is_longitudinal) {
+      if (is.null(time_points)) time_points <- cluster_size
+      time_spacing <- seq(0, as.integer(time_points) - 1L)
     }
     if (is.null(icc)) {
       icc <- 0.15
@@ -444,6 +479,18 @@ translate_prompt_backend.spec_translator_rule <- function(translator, prompt) {
     }
   }
 
+  ar1_rho <- NULL
+  if (is_longitudinal && out_family == "gaussian") {
+    m_ar1 <- reg_capture("\\b(?:ar\\(1\\)|ar1|autocorrelation)(?:\\s+(?:rho|cor(?:relation)?))?\\s*(?:=|of|is)?\\s*(-?0?\\.\\d+|0)\\b", low)
+    if (!is.null(m_ar1)) {
+      ar1_rho <- as.numeric(m_ar1[[1L]])
+      mark_parsed("outcome.ar1_rho")
+    } else {
+      ar1_rho <- 0.30
+      rationale[["outcome.ar1_rho"]] <- "Within-subject AR(1) autocorrelation was not specified; defaulted to 0.30."
+    }
+  }
+
   # --- 3. Predictors & Fixed Effects ---
   predictors <- list()
   fixed_effects <- list()
@@ -457,10 +504,23 @@ translate_prompt_backend.spec_translator_rule <- function(translator, prompt) {
     }
   }
 
+  if (is_longitudinal) {
+    m_tb <- reg_capture("\\b(?:growth\\s+(?:rate|slope)|time\\s+(?:effect|slope|beta))\\s*(?:=|of|is)?\\s*(-?\\d+(?:\\.\\d+)?)\\b", low)
+    t_beta <- if (!is.null(m_tb)) {
+      mark_parsed("effects.fixed.time")
+      as.numeric(m_tb[[1L]])
+    } else {
+      rationale[["effects.fixed.time"]] <- "Defaulted linear growth slope for 'time' to 0.30 per wave."
+      0.30
+    }
+    add_pred(spec_predictor("time", level = 1L, distribution = "time", centering = "none", role = "focal"), beta = t_beta)
+    mark_parsed("predictors.time")
+  }
+
   # Treatment / intervention predictor
   has_treatment <- grepl("\\b(treatment|intervention|trt|experimental\\s+group)\\b", low, perl = TRUE)
   if (has_treatment) {
-    trt_level <- if (levels_val == 2L && grepl(sprintf("\\b(level[- ]?2|cluster[- ]?(?:level|randomized)|%s[- ]?level)\\s+(?:treatment|intervention|trt)\\b", cluster_name), low, perl = TRUE)) {
+    trt_level <- if (is_longitudinal || (levels_val == 2L && grepl(sprintf("\\b(level[- ]?2|cluster[- ]?(?:level|randomized)|%s[- ]?level)\\s+(?:treatment|intervention|trt)\\b", cluster_name), low, perl = TRUE))) {
       2L
     } else {
       1L
@@ -499,7 +559,7 @@ translate_prompt_backend.spec_translator_rule <- function(translator, prompt) {
       beta = trt_beta
     )
     mark_parsed("predictors.treatment")
-    if (levels_val == 2L && !grepl("\\b(level[- ]?[12]|cluster[- ]?(?:level|randomized)|student[- ]?level|unit[- ]?level)\\b", low, perl = TRUE)) {
+    if (!is_longitudinal && levels_val == 2L && !grepl("\\b(level[- ]?[12]|cluster[- ]?(?:level|randomized)|student[- ]?level|unit[- ]?level)\\b", low, perl = TRUE)) {
       rationale[["predictors.treatment.level"]] <- "Treatment assignment level was not stated; defaulted to level-1 (within-cluster randomization)."
       add_clarif(
         "treatment_level", "predictors.treatment.level",
@@ -513,6 +573,7 @@ translate_prompt_backend.spec_translator_rule <- function(translator, prompt) {
   named_matches <- regmatches(low, gregexpr("\\b(x[1-9]|z[1-9]|ses|age|baseline|pretest|income|time)\\b", low, perl = TRUE))[[1L]]
   named_matches <- unique(named_matches)
   for (nm in named_matches) {
+    if (has_pred(nm)) next
     # Check if level-2 explicitly mentioned near predictor
     p_lvl <- if (levels_val == 2L && grepl(sprintf("\\b(?:level[- ]?2|cluster[- ]?level)\\s+%s\\b", nm), low, perl = TRUE)) 2L else 1L
     p_dist <- if (grepl(sprintf("\\bbinary\\s+%s\\b", nm), low, perl = TRUE)) {
@@ -643,12 +704,14 @@ translate_prompt_backend.spec_translator_rule <- function(translator, prompt) {
   # --- 4. Random Effects (Slopes & Correlation) ---
   rand_slopes <- list()
   rand_corr <- NULL
-  if (levels_val == 2L && grepl("\\brandom\\s+slopes?\\b", low, perl = TRUE)) {
+  if (levels_val == 2L && (is_longitudinal || grepl("\\brandom\\s+slopes?\\b", low, perl = TRUE))) {
     # Look for "random slope(s) for x1 (and x2)"
     m_sl <- reg_capture("\\brandom\\s+slopes?\\s+(?:for|on)\\s+([a-z][a-z0-9_]*)(?:\\s+and\\s+([a-z][a-z0-9_]*))?", low)
     slope_targets <- character()
     if (!is.null(m_sl)) {
       slope_targets <- Filter(nzchar, m_sl)
+    } else if (is_longitudinal) {
+      slope_targets <- "time"
     } else {
       # Default to first level-1 predictor
       l1_preds <- Filter(function(p) identical(as.integer(p$level), 1L), predictors)
@@ -713,13 +776,22 @@ translate_prompt_backend.spec_translator_rule <- function(translator, prompt) {
   miss_aux <- NULL
   miss_strength <- NULL
 
+  has_monotone <- is_longitudinal && grepl("\\b(monotone\\s+(?:dropout|attrition)|dropout|attrition)\\b", low, perl = TRUE)
   has_mar <- grepl("\\b(mar|missing\\s+at\\s+random)\\b", low, perl = TRUE)
   has_mcar <- grepl("\\b(mcar|missing\\s+completely\\s+at\\s+random)\\b", low, perl = TRUE)
   has_miss_generic <- grepl("\\b(missingness|missing\\s+data|attrition|dropout|missing\\s+rate)\\b", low, perl = TRUE)
 
-  if (has_mar || has_mcar || has_miss_generic) {
-    miss_mech <- if (has_mar) "MAR" else if (has_mcar) "MCAR" else "MAR"
-    if (!has_mar && !has_mcar) {
+  if (has_monotone || has_mar || has_mcar || has_miss_generic) {
+    miss_mech <- if (has_monotone && !has_mar && !has_mcar) {
+      "monotone_dropout"
+    } else if (has_mar) {
+      "MAR"
+    } else if (has_mcar) {
+      "MCAR"
+    } else {
+      "MAR"
+    }
+    if (!has_monotone && !has_mar && !has_mcar) {
       rationale[["missingness.mechanism"]] <- "Missingness was requested without specifying mechanism; defaulted to MAR."
       add_clarif("missing_mechanism", "missingness.mechanism",
                  "Which missingness mechanism should be simulated?",
@@ -728,7 +800,7 @@ translate_prompt_backend.spec_translator_rule <- function(translator, prompt) {
       mark_parsed("missingness.mechanism")
     }
 
-    m_pct <- reg_capture("\\b(\\d+(?:\\.\\d+)?)\\s*(%|percent)?\\s*(?:mar|mcar)?\\s*(?:missingness|missing|attrition|dropout)\\b", low)
+    m_pct <- reg_capture("\\b(\\d+(?:\\.\\d+)?)\\s*(%|percent)?\\s*(?:monotone\\s+)?(?:mar|mcar)?\\s*(?:missingness|missing|attrition|dropout)\\b", low)
     if (is.null(m_pct)) {
       m_pct <- reg_capture("\\b(?:missingness|missing\\s+rate|attrition|dropout)\\s*(?:of|=|is)?\\s*(\\d+(?:\\.\\d+)?)\\s*(%|percent)?\\b", low)
     }
@@ -815,6 +887,8 @@ translate_prompt_backend.spec_translator_rule <- function(translator, prompt) {
       cluster_size = cluster_size,
       cluster_size_dist = cluster_size_dist,
       cluster_size_sd = cluster_size_sd,
+      time_points = time_points,
+      time_spacing = time_spacing,
       cluster_name = cluster_name,
       unit_name = unit_name,
       icc = icc
@@ -839,7 +913,7 @@ translate_prompt_backend.spec_translator_rule <- function(translator, prompt) {
     outcome = list(
       name = "y", family = out_family, link = out_link,
       residual_sd = residual_sd, error_dist = error_dist,
-      error_df = error_df, error_skew = error_skew
+      error_df = error_df, error_skew = error_skew, ar1_rho = ar1_rho
     ),
     effects = list(
       intercept = 0,
@@ -990,6 +1064,25 @@ refine_spec_backend.spec_translator_rule <- function(translator, spec, instructi
     if (!is.null(m_n)) {
       s$hierarchy$n_obs <- as.integer(m_n[[1L]])
       mark("hierarchy.n_obs")
+    }
+  }
+
+  if (identical(s$design_type, "longitudinal_growth")) {
+    m_tw <- reg_capture("\\b(\\d+)\\s+(?:waves?|time[- ]?points?|occasions?)\\b", low)
+    if (is.null(m_tw)) {
+      m_tw <- reg_capture("\\b(?:time_points|waves)\\s*(?:to|=|of)?\\s*(\\d+)\\b", low)
+    }
+    if (!is.null(m_tw)) {
+      tp <- as.integer(m_tw[[1L]])
+      s$hierarchy$time_points <- tp
+      s$hierarchy$cluster_size <- tp
+      s$hierarchy$time_spacing <- seq(0, tp - 1L)
+      mark("hierarchy.time_points")
+    }
+    m_ar1 <- reg_capture("\\b(?:ar\\(1\\)|ar1|autocorrelation|ar1_rho)(?:\\s+rho)?\\s*(?:to|=|of)?\\s*(-?0?\\.\\d+|0)\\b", low)
+    if (!is.null(m_ar1) && identical(s$outcome$family, "gaussian")) {
+      s$outcome$ar1_rho <- as.numeric(m_ar1[[1L]])
+      mark("outcome.ar1_rho")
     }
   }
 
@@ -1173,12 +1266,14 @@ refine_spec_backend.spec_translator_rule <- function(translator, spec, instructi
         if (!(t1 %in% existing)) {
           s$predictors[[length(s$predictors) + 1L]] <- spec_predictor(t1, level = 1L, distribution = "normal")
           s$effects$fixed[[t1]] <- 0.2
+          if (is.matrix(s$predictor_corr)) s$predictor_corr <- resize_corr_matrix(s$predictor_corr, length(s$predictors))
           existing <- c(existing, t1)
         }
         if (!(t2 %in% existing)) {
           t2_lvl <- if (identical(as.integer(s$hierarchy$levels), 2L) && (grepl("cross[- ]?level", low) || grepl("^z[1-9]$", t2))) 2L else 1L
           s$predictors[[length(s$predictors) + 1L]] <- spec_predictor(t2, level = t2_lvl, distribution = "normal")
           s$effects$fixed[[t2]] <- 0.2
+          if (is.matrix(s$predictor_corr)) s$predictor_corr <- resize_corr_matrix(s$predictor_corr, length(s$predictors))
           existing <- c(existing, t2)
         }
         ib <- if (length(m_aint) >= 3L && nzchar(m_aint[[3L]])) as.numeric(m_aint[[3L]]) else 0.25
@@ -1217,6 +1312,7 @@ refine_spec_backend.spec_translator_rule <- function(translator, spec, instructi
         if (!(target_sl %in% existing)) {
           s$predictors[[length(s$predictors) + 1L]] <- spec_predictor(target_sl, level = 1L, distribution = "normal")
           s$effects$fixed[[target_sl]] <- 0.2
+          if (is.matrix(s$predictor_corr)) s$predictor_corr <- resize_corr_matrix(s$predictor_corr, length(s$predictors))
         }
         s <- upsert_random_slope_helper(s, target_sl, sd_val)
         mark(paste0("effects.random.slopes.", target_sl, ".sd"))
@@ -1244,16 +1340,18 @@ refine_spec_backend.spec_translator_rule <- function(translator, spec, instructi
     s$missingness$strength <- NULL
     s$simulation$parameter_grid$missing_rate <- NULL
     mark("missingness.mechanism")
-  } else if (grepl("\\b(mar|mcar|missingness|missing\\s+data|missing\\s+rate|attrition)\\b", low, perl = TRUE)) {
-    if (grepl("\\bmar\\b", low)) {
+  } else if (grepl("\\b(monotone\\s+(?:dropout|attrition)|mar|mcar|missingness|missing\\s+data|missing\\s+rate|attrition|dropout)\\b", low, perl = TRUE)) {
+    if (identical(s$design_type, "longitudinal_growth") && grepl("\\b(monotone|dropout)\\b", low, perl = TRUE) && !grepl("\\b(mar|mcar)\\b", low, perl = TRUE)) {
+      s$missingness$mechanism <- "monotone_dropout"
+    } else if (grepl("\\bmar\\b", low)) {
       s$missingness$mechanism <- "MAR"
     } else if (grepl("\\bmcar\\b", low)) {
       s$missingness$mechanism <- "MCAR"
     } else if (identical(s$missingness$mechanism, "none")) {
-      s$missingness$mechanism <- "MAR"
+      s$missingness$mechanism <- if (identical(s$design_type, "longitudinal_growth")) "monotone_dropout" else "MAR"
     }
 
-    m_pct <- reg_capture("\\b(\\d+(?:\\.\\d+)?)\\s*(%|percent)?\\s*(?:mar|mcar)?\\s*(?:missingness|missing|attrition)\\b", low)
+    m_pct <- reg_capture("\\b(\\d+(?:\\.\\d+)?)\\s*(%|percent)?\\s*(?:monotone\\s+)?(?:mar|mcar)?\\s*(?:missingness|missing|attrition|dropout)\\b", low)
     if (is.null(m_pct)) {
       m_pct <- reg_capture("\\b(?:missingness|missing\\s+rate|attrition)\\s*(?:to|=|of)?\\s*(\\d+(?:\\.\\d+)?)\\s*(%|percent)?\\b", low)
     }
@@ -1442,6 +1540,7 @@ synthesize_title <- function(design_type, levels_val, family, cluster_name, has_
     power_analysis = "Power Simulation",
     multilevel_sim = "Multilevel Simulation",
     two_level_mlm = "Multilevel Model Study",
+    longitudinal_growth = "Longitudinal Growth Study",
     monte_carlo_lm = "Monte Carlo Simulation"
   )
   extras <- c(

@@ -340,6 +340,8 @@ default_grid_values_for_axis <- function(spec, axis) {
     c(0.75, 1.0, 1.5)
   } else if (axis == "missing_rate") {
     c(0.05, 0.15, 0.30)
+  } else if (axis == "ar1_rho") {
+    c(0, 0.3, 0.6)
   } else {
     c(1, 2)
   }

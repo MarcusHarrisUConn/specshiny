@@ -163,6 +163,8 @@ build_cfg_block <- function(spec, focal) {
       sprintf("  cluster_size = %s,", fmt_int(spec$hierarchy$cluster_size)),
       sprintf("  cluster_size_dist = %s,", deparse1(cs_dist)),
       if (identical(cs_dist, "normal")) sprintf("  cluster_size_sd = %s,", fmt_num(spec$hierarchy$cluster_size_sd)) else NULL,
+      if (!is.null(spec$hierarchy$time_points)) sprintf("  time_points = %s,", fmt_int(spec$hierarchy$time_points)) else NULL,
+      if (!is.null(spec$hierarchy$time_spacing)) sprintf("  time_spacing = %s,", fmt_num_vec(spec$hierarchy$time_spacing)) else NULL,
       sprintf("  icc = %s,", fmt_num(spec$hierarchy$icc))
     )
   }
@@ -174,7 +176,8 @@ build_cfg_block <- function(spec, focal) {
       sprintf("  residual_sd = %s,", fmt_num(spec$outcome$residual_sd)),
       sprintf("  error_dist = %s,", deparse1(edist)),
       if (identical(edist, "t")) sprintf("  error_df = %s,", fmt_num(spec$outcome$error_df)) else NULL,
-      if (identical(edist, "skewed")) sprintf("  error_skew = %s,", fmt_num(spec$outcome$error_skew)) else NULL
+      if (identical(edist, "skewed")) sprintf("  error_skew = %s,", fmt_num(spec$outcome$error_skew)) else NULL,
+      if (identical(spec$design_type, "longitudinal_growth")) sprintf("  ar1_rho = %s,", fmt_num(spec$outcome$ar1_rho %||% 0)) else NULL
     )
   }
 
@@ -235,11 +238,12 @@ build_cfg_block <- function(spec, focal) {
     sprintf("  missing_mechanism = %s,", deparse1(spec$missingness$mechanism)),
     sprintf("  missing_rate = %s,", fmt_num(spec$missingness$rate))
   )
-  if (identical(spec$missingness$mechanism, "MAR")) {
+  if (identical(spec$missingness$mechanism, "MAR") ||
+      (identical(spec$missingness$mechanism, "monotone_dropout") && !is.null(spec$missingness$auxiliary))) {
     lines <- c(
       lines,
       sprintf("  missing_auxiliary = %s,", deparse1(spec$missingness$auxiliary)),
-      sprintf("  missing_strength = %s,", fmt_num(spec$missingness$strength))
+      sprintf("  missing_strength = %s,", fmt_num(spec$missingness$strength %||% 1.0))
     )
   }
 
@@ -317,6 +321,7 @@ build_dgp_block <- function(spec) {
         "  cluster_size <- as.integer(params$cluster_size)",
         "  n <- n_clusters * cluster_size",
         "  cluster_idx <- rep(seq_len(n_clusters), each = cluster_size)",
+        if (identical(spec$design_type, "longitudinal_growth")) "  wave_idx <- rep(seq_len(cluster_size), times = n_clusters)" else NULL,
         sprintf("  dat <- data.frame(%s = factor(cluster_idx))", cl_name)
       )
     }
@@ -346,6 +351,7 @@ build_dgp_block <- function(spec) {
         z_col <- sprintf("%s[, %dL]", z_sym, pos)
         raw_expr <- switch(
           p$distribution,
+          time = "params$time_spacing[wave_idx]",
           normal = sprintf("%s + %s * %s", fmt_num(p$mean), fmt_num(p$sd), z_col),
           binary = sprintf("as.integer(stats::pnorm(%s) < %s)", z_col, fmt_num(p$prob)),
           uniform = sprintf("%s + (%s - %s) * stats::pnorm(%s)",
@@ -379,6 +385,7 @@ build_dgp_block <- function(spec) {
 
       draw_expr <- switch(
         p$distribution,
+        time = "params$time_spacing[wave_idx]",
         normal = sprintf("stats::rnorm(%s, mean = %s, sd = %s)", draw_n, fmt_num(p$mean), fmt_num(p$sd)),
         binary = sprintf("stats::rbinom(%s, size = 1L, prob = %s)", draw_n, fmt_num(p$prob)),
         uniform = sprintf("stats::runif(%s, min = %s, max = %s)", draw_n, fmt_num(p$min), fmt_num(p$max))
@@ -477,25 +484,44 @@ build_dgp_block <- function(spec) {
     }
   }
 
-  # Outcome draw from closed family/link/error_dist switch
+  # Outcome draw from closed family/link/error_dist/AR(1) switch
   if (fam == "gaussian") {
     edist <- spec$outcome$error_dist %||% "normal"
     if (identical(edist, "t")) {
       lines <- c(
         lines,
-        "  eps_t <- stats::rt(n, df = params$error_df) * sqrt((params$error_df - 2) / params$error_df)",
-        sprintf("  dat$%s <- eta + params$residual_sd * eps_t", y_name)
+        "  eps_innov <- params$residual_sd * stats::rt(n, df = params$error_df) * sqrt((params$error_df - 2) / params$error_df)"
       )
     } else if (identical(edist, "skewed")) {
       lines <- c(
         lines,
         "  k_shape <- 4 / (params$error_skew^2)",
         "  g_raw <- stats::rgamma(n, shape = k_shape, rate = 1)",
-        "  eps_sk <- sign(params$error_skew) * (g_raw - k_shape) / sqrt(k_shape)",
-        sprintf("  dat$%s <- eta + params$residual_sd * eps_sk", y_name)
+        "  eps_innov <- params$residual_sd * sign(params$error_skew) * (g_raw - k_shape) / sqrt(k_shape)"
       )
     } else {
-      lines <- c(lines, sprintf("  dat$%s <- stats::rnorm(n, mean = eta, sd = params$residual_sd)", y_name))
+      lines <- c(lines, "  eps_innov <- stats::rnorm(n, mean = 0, sd = params$residual_sd)")
+    }
+
+    if (identical(spec$design_type, "longitudinal_growth")) {
+      lines <- c(
+        lines,
+        "  eps <- eps_innov",
+        "  if (abs(params$ar1_rho) > 0 && cluster_size >= 2L) {",
+        "    rho <- params$ar1_rho",
+        "    for (s_i in seq_len(n_clusters)) {",
+        "      idx_s <- ((s_i - 1L) * cluster_size + 1L):(s_i * cluster_size)",
+        "      for (w_t in 2L:cluster_size) {",
+        "        dt_w <- if (rho >= 0) params$time_spacing[w_t] - params$time_spacing[w_t - 1L] else 1",
+        "        phi_w <- if (rho >= 0) rho^dt_w else rho",
+        "        eps[idx_s[w_t]] <- phi_w * eps[idx_s[w_t - 1L]] + sqrt(1 - phi_w^2) * eps_innov[idx_s[w_t]]",
+        "      }",
+        "    }",
+        "  }",
+        sprintf("  dat$%s <- eta + eps", y_name)
+      )
+    } else {
+      lines <- c(lines, sprintf("  dat$%s <- eta + eps_innov", y_name))
     }
   } else {
     outcome_expr <- if (fam == "binomial" && lnk == "logit") {
@@ -535,6 +561,37 @@ build_dgp_block <- function(spec) {
       "    p_miss <- stats::plogis(a0 + gamma * aux_z)",
       "    is_miss <- stats::rbinom(n, size = 1L, prob = p_miss) == 1L",
       sprintf("    dat$%s[is_miss] <- NA", y_name),
+      "  }"
+    )
+  } else if (identical(mech, "monotone_dropout")) {
+    has_aux <- !is.null(spec$missingness$auxiliary)
+    lines <- c(
+      lines,
+      "  if (params$missing_rate > 0 && cluster_size >= 2L) {",
+      "    h_base <- 1 - (1 - params$missing_rate)^(1 / (cluster_size - 1L))",
+      if (has_aux) c(
+        sprintf("    aux_subj <- as.numeric(dat$%s[seq_len(n_clusters) * cluster_size - (cluster_size - 1L)])", spec$missingness$auxiliary),
+        "    aux_sd <- stats::sd(aux_subj)",
+        "    aux_z <- if (is.finite(aux_sd) && aux_sd > 0) (aux_subj - mean(aux_subj)) / aux_sd else rep(0, n_clusters)",
+        "    gamma_d <- params$missing_strength",
+        "    a0_d <- tryCatch(",
+        "      stats::uniroot(function(a) mean(1 - (1 - stats::plogis(a + gamma_d * aux_z))^(cluster_size - 1L)) - params$missing_rate, interval = c(-25, 25))$root,",
+        "      error = function(e) stats::qlogis(h_base)",
+        "    )",
+        "    h_subj <- stats::plogis(a0_d + gamma_d * aux_z)"
+      ) else "    h_subj <- rep(h_base, n_clusters)",
+      "    for (s_i in seq_len(n_clusters)) {",
+      "      idx_s <- ((s_i - 1L) * cluster_size + 1L):(s_i * cluster_size)",
+      "      dropped <- FALSE",
+      "      for (w_t in 2L:cluster_size) {",
+      "        if (!dropped && stats::rbinom(1L, size = 1L, prob = h_subj[s_i]) == 1L) {",
+      "          dropped <- TRUE",
+      "        }",
+      "        if (dropped) {",
+      sprintf("          dat$%s[idx_s[w_t]] <- NA", y_name),
+      "        }",
+      "      }",
+      "    }",
       "  }"
     )
   }

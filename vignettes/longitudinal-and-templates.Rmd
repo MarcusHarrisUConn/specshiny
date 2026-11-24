@@ -1,0 +1,207 @@
+---
+title: "Longitudinal Growth Curves, Design Comparisons, and Template Registries"
+output: rmarkdown::html_vignette
+vignette: >
+  %\VignetteIndexEntry{Longitudinal Growth Curves, Design Comparisons, and Template Registries}
+  %\VignetteEngine{knitr::rmarkdown}
+  %\VignetteEncoding{UTF-8}
+---
+
+```{r, include = FALSE}
+knitr::opts_chunk$set(
+  collapse = TRUE,
+  comment = "#>"
+)
+```
+
+`specshiny` v0.4.0 introduces three practitioner-oriented capabilities built on
+top of the same schema-validated IR (`spec_ir` v1.2.0) and AST-verified
+compilation pipeline:
+
+1. **Longitudinal growth-curve designs** (`design_type = "longitudinal_growth"`)
+   with explicit wave schedules (`time_points`, `time_spacing`), random
+   intercepts and random time slopes, stationary within-subject AR(1) residual
+   autocorrelation (`outcome$ar1_rho`), and strictly monotone post-baseline
+   dropout (`missingness$mechanism = "monotone_dropout"`).
+2. **Multi-scenario design comparison** (`compare_specs()`) quantifying total
+   sample size $N$, cluster design effect ($\mathrm{DEFF}$), effective sample
+   size ($N_{\mathrm{eff}}$), variance decomposition, semantic IR diffs, and
+   optional comparative Monte Carlo power.
+3. **An extensible domain template registry** (`list_spec_templates()`,
+   `use_spec_template()`, `register_spec_template()`,
+   `unregister_spec_template()`) that gates every registered template through
+   both `assert_valid_spec_ir()` and `verify_compiled_r_ast()`.
+
+```{r setup}
+library(specshiny)
+```
+
+## 1. Longitudinal Growth Curves with AR(1) & Monotone Dropout
+
+Plain-English descriptions of repeated-measures growth studies compile directly
+into `spec_ir` v1.2.0 using the offline `translator_rule()` backend:
+
+```{r nl-longitudinal}
+prompt <- paste(
+  "Longitudinal growth curve simulation with 120 subjects across 5 waves,",
+  "ICC 0.4, AR(1) correlation 0.4, growth slope 0.35, random slope for time,",
+  "treatment effect 0.25, 25% monotone dropout, 200 replications"
+)
+
+tr <- nl_to_spec(prompt)
+tr$spec
+```
+
+Refinements update wave counts, time schedules, autocorrelation, and dropout
+rates while maintaining all statistical sanity guardrails (such as keeping
+`abs(ar1_rho) < 0.95` and synchronizing `time_points`, `cluster_size`, and
+`time_spacing`):
+
+```{r refine-longitudinal}
+ref <- refine_spec(tr$spec, "increase to 6 waves and set AR(1) rho to 0.55")
+ref$diff
+spec_to_math(ref$spec)$latex
+```
+
+Notice that `spec_to_controls()` synthesizes longitudinal-specific controls
+(`time_points`, `ar1_rho`, and `"monotone_dropout"` in the missingness
+selector) while omitting inapplicable cross-sectional cluster-size distribution
+widgets:
+
+```{r controls-longitudinal}
+desc <- spec_to_controls(ref$spec)
+desc$sections$hierarchy$controls[[2]]$id
+desc$sections$outcome$controls[[4]]$id
+desc$available_grid_axes
+```
+
+### Compiling and Verifying AR(1) & Monotone Dropout Behavior
+
+`compile_r_script()` deterministically emits standalone R code (verified via
+`verify_compiled_r_ast(strict = TRUE)`) implementing stationary AR(1) within-
+subject innovations and strictly monotone wave-by-wave attrition:
+
+```{r execute-longitudinal}
+sp_demo <- use_spec_template(
+  "longitudinal_growth_ar1",
+  n_clusters = 150L,
+  ar1_rho = 0.50,
+  n_reps = 2L
+)
+
+r_script <- compile_r_script(sp_demo)
+ast_report <- verify_compiled_r_ast(r_script)
+c(ast_safe = ast_report$safe, expressions = ast_report$n_expressions)
+
+# Source the compiled script in an isolated environment and inspect one draw
+f_tmp <- tempfile(fileext = ".R")
+writeLines(r_script, f_tmp)
+sim_env <- new.env(parent = baseenv())
+invisible(capture.output(sys.source(f_tmp, envir = sim_env)))
+unlink(f_tmp)
+
+dat <- sim_env$simulate_one_dataset(sim_env$cfg)
+miss_mat <- matrix(is.na(dat$y), nrow = sp_demo$hierarchy$n_clusters,
+                   ncol = sp_demo$hierarchy$time_points, byrow = TRUE)
+
+c(
+  wave1_missing = sum(miss_mat[, 1L]),
+  all_subjects_strictly_monotone = all(apply(miss_mat, 1L, function(r) all(diff(as.integer(r)) >= 0L))),
+  final_wave_dropout_rate = round(mean(miss_mat[, ncol(miss_mat)]), 3)
+)
+```
+
+## 2. Comparing Competing Designs with `compare_specs()`
+
+When designing a study, researchers routinely trade off sample size, cluster
+allocation, cluster-size imbalance, and repeated-measures structure.
+`compare_specs()` evaluates two or more validated `spec_ir` objects side by
+side using the Kish / Eldridge-Ashby-Kerry design effect:
+
+$$\mathrm{DEFF} = 1 + \left(\bar{n}_j (1 + \mathrm{CV}^2) - 1\right)\mathrm{ICC},
+\qquad N_{\mathrm{eff}} = \frac{N}{\mathrm{DEFF}}.$$
+
+```{r compare-designs}
+s_ols  <- use_spec_template("factorial_ols", n_obs = 400L)
+s_crt  <- use_spec_template("cluster_rct", n_clusters = 40L, cluster_size = 10L)
+s_mlm  <- use_spec_template("cross_level_mlm", n_clusters = 40L, cluster_size = 10L, cluster_size_sd = 4)
+s_long <- use_spec_template("longitudinal_growth_ar1", n_clusters = 80L, ar1_rho = 0.45)
+
+cmp <- compare_specs(
+  ols = s_ols,
+  balanced_crt = s_crt,
+  unbalanced_mlm = s_mlm,
+  longitudinal_ar1 = s_long
+)
+
+cmp
+```
+
+Extract the full comparison table with `as.data.frame()` or examine metric
+deltas relative to the baseline scenario:
+
+```{r compare-df}
+as.data.frame(cmp)[, c("scenario", "total_n", "cluster_size_cv", "icc", "deff", "n_eff", "n_controls")]
+cmp$deltas
+```
+
+Setting `run_power = TRUE` runs a bounded pure-R preview simulation for every
+scenario under a shared random seed so you can inspect comparative power, bias,
+and standard errors alongside analytical efficiency:
+
+```{r compare-power}
+cmp_pwr <- compare_specs(
+  ols = s_ols,
+  balanced_crt = s_crt,
+  run_power = TRUE,
+  preview_reps = 10L,
+  seed = 2026L
+)
+as.data.frame(cmp_pwr)[, c("scenario", "total_n", "n_eff", "focal_effect", "est_power", "est_mean_se")]
+```
+
+## 3. Built-In & Custom Domain Templates
+
+`specshiny` ships five immutable built-in templates spanning experimental,
+multilevel, longitudinal, and generalized linear designs:
+
+```{r list-templates}
+list_spec_templates()[, c("name", "source", "category", "design_type", "estimator")]
+```
+
+Instantiate any template with parameter overrides (by control ID, shorthand
+field name, or dotted IR path) and optional natural-language refinement:
+
+```{r use-template}
+s_custom <- use_spec_template(
+  "longitudinal_growth_ar1",
+  overrides = list("outcome.ar1_rho" = 0.60, title = "Quarterly Clinical Trial"),
+  time_spacing = c(0, 3, 6, 9, 12),
+  n_clusters = 100L,
+  refine = "add 20% monotone dropout"
+)
+s_custom
+```
+
+Teams can register their own reusable templates with `register_spec_template()`.
+Registration is strictly gated by both `assert_valid_spec_ir()` and
+`verify_compiled_r_ast(compile_r_script(spec), strict = TRUE)`, so invalid or
+unsafe specifications can never enter the registry:
+
+```{r register-template}
+register_spec_template(
+  name = "quarterly_clinical_growth",
+  spec = s_custom,
+  description = "5-wave quarterly growth curve with AR(1) rho = 0.60 and 20% monotone dropout.",
+  category = "clinical"
+)
+
+list_spec_templates(category = "clinical")[, c("name", "source", "category", "design_type")]
+
+# Instantiate directly from the custom template
+s_run <- use_spec_template("quarterly_clinical_growth", n_clusters = 140L)
+spec_total_n(s_run)
+
+# Clean up session registry
+unregister_spec_template("quarterly_clinical_growth")
+```

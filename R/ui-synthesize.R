@@ -29,6 +29,7 @@ spec_to_controls <- function(spec) {
   assert_valid_spec_ir(spec)
 
   levels_val <- as.integer(spec$hierarchy$levels)
+  is_long <- identical(spec$design_type, "longitudinal_growth")
   sections <- list()
 
   make_ctrl <- function(id, path, label, type, value, min = NULL, max = NULL,
@@ -60,6 +61,42 @@ spec_to_controls <- function(spec) {
       )
     )
     hier_sub <- "Single-level independent observations"
+  } else if (is_long) {
+    tp_val <- as.integer(spec$hierarchy$time_points %||% spec$hierarchy$cluster_size)
+    hier_ctrls <- list(
+      make_ctrl(
+        id = "n_clusters",
+        path = "hierarchy.n_clusters",
+        label = sprintf("Number of %ss (J)", spec$hierarchy$cluster_name),
+        type = "numeric",
+        value = as.integer(spec$hierarchy$n_clusters),
+        min = 3L, max = 2000L, step = 10L
+      ),
+      make_ctrl(
+        id = "time_points",
+        path = "hierarchy.time_points",
+        label = sprintf("Number of %ss (T)", spec$hierarchy$unit_name),
+        type = "numeric",
+        value = tp_val,
+        min = 3L, max = 50L, step = 1L
+      ),
+      make_ctrl(
+        id = "icc",
+        path = "hierarchy.icc",
+        label = "Intraclass Correlation (ICC)",
+        type = "slider",
+        value = as.numeric(spec$hierarchy$icc),
+        min = 0, max = 0.90, step = 0.01
+      )
+    )
+    hier_sub <- sprintf(
+      "Longitudinal growth (%d %ss x %d %ss = %d total)",
+      as.integer(spec$hierarchy$n_clusters),
+      spec$hierarchy$cluster_name,
+      tp_val,
+      spec$hierarchy$unit_name,
+      spec_total_n(spec)
+    )
   } else {
     hier_ctrls <- list(
       make_ctrl(
@@ -176,6 +213,16 @@ spec_to_controls <- function(spec) {
         type = "slider",
         value = as.numeric(spec$outcome$error_skew),
         min = -3.5, max = 3.5, step = 0.1
+      )
+    }
+    if (is_long) {
+      out_ctrls[[length(out_ctrls) + 1L]] <- make_ctrl(
+        id = "ar1_rho",
+        path = "outcome.ar1_rho",
+        label = "Within-Subject AR(1) Autocorrelation (rho)",
+        type = "slider",
+        value = as.numeric(spec$outcome$ar1_rho %||% 0),
+        min = -0.90, max = 0.90, step = 0.05
       )
     }
   }
@@ -362,6 +409,7 @@ spec_to_controls <- function(spec) {
 
   # 5. Missingness section (conditional on mechanism)
   miss_mech <- spec$missingness$mechanism
+  miss_choices <- if (is_long) c("none", "MCAR", "MAR", "monotone_dropout") else c("none", "MCAR", "MAR")
   miss_ctrls <- list(
     make_ctrl(
       id = "missing_mechanism",
@@ -369,24 +417,29 @@ spec_to_controls <- function(spec) {
       label = "Missingness Mechanism",
       type = "select",
       value = miss_mech,
-      choices = c("none", "MCAR", "MAR")
+      choices = miss_choices
     )
   )
   if (!identical(miss_mech, "none")) {
     miss_ctrls[[length(miss_ctrls) + 1L]] <- make_ctrl(
       id = "missing_rate",
       path = "missingness.rate",
-      label = "Target Missingness Proportion",
+      label = if (identical(miss_mech, "monotone_dropout")) {
+        "Cumulative Final-Wave Dropout Proportion"
+      } else {
+        "Target Missingness Proportion"
+      },
       type = "slider",
       value = as.numeric(spec$missingness$rate),
       min = 0.01, max = 0.85, step = 0.01
     )
   }
-  if (identical(miss_mech, "MAR")) {
+  if (identical(miss_mech, "MAR") ||
+      (identical(miss_mech, "monotone_dropout") && !is.null(spec$missingness$auxiliary))) {
     miss_ctrls[[length(miss_ctrls) + 1L]] <- make_ctrl(
       id = "missing_auxiliary",
       path = "missingness.auxiliary",
-      label = "MAR Auxiliary Predictor",
+      label = if (identical(miss_mech, "monotone_dropout")) "Dropout Auxiliary Predictor" else "MAR Auxiliary Predictor",
       type = "select",
       value = spec$missingness$auxiliary,
       choices = pred_names
@@ -394,9 +447,9 @@ spec_to_controls <- function(spec) {
     miss_ctrls[[length(miss_ctrls) + 1L]] <- make_ctrl(
       id = "missing_strength",
       path = "missingness.strength",
-      label = "MAR Log-Odds Slope",
+      label = if (identical(miss_mech, "monotone_dropout")) "Dropout Log-Odds Slope" else "MAR Log-Odds Slope",
       type = "slider",
-      value = as.numeric(spec$missingness$strength),
+      value = as.numeric(spec$missingness$strength %||% 1.0),
       min = -3, max = 3, step = 0.1
     )
   }
@@ -490,9 +543,12 @@ print.spec_ui_descriptor <- function(x, ...) {
 
 available_grid_axes_for_spec <- function(spec) {
   levels_val <- as.integer(spec$hierarchy$levels)
+  is_long <- identical(spec$design_type, "longitudinal_growth")
   axes <- character()
   if (levels_val == 1L) {
     axes <- c(axes, "n_obs")
+  } else if (is_long) {
+    axes <- c(axes, "n_clusters", "icc")
   } else {
     axes <- c(axes, "n_clusters", "cluster_size", "icc")
   }
@@ -501,6 +557,9 @@ available_grid_axes_for_spec <- function(spec) {
   }
   if (identical(spec$outcome$family, "gaussian")) {
     axes <- c(axes, "residual_sd")
+    if (is_long) {
+      axes <- c(axes, "ar1_rho")
+    }
   }
   if (!identical(spec$missingness$mechanism, "none")) {
     axes <- c(axes, "missing_rate")
@@ -544,6 +603,13 @@ patch_spec_from_control <- function(spec, control_id, value) {
     s$hierarchy$n_obs <- maybe_int(suppressWarnings(as.numeric(value)))
   } else if (control_id == "n_clusters") {
     s$hierarchy$n_clusters <- maybe_int(suppressWarnings(as.numeric(value)))
+  } else if (control_id == "time_points") {
+    tp <- maybe_int(suppressWarnings(as.numeric(value)))
+    s$hierarchy$time_points <- tp
+    s$hierarchy$cluster_size <- tp
+    if (is_whole_scalar(tp) && as.integer(tp) >= 2L) {
+      s$hierarchy$time_spacing <- as.numeric(seq.int(0L, as.integer(tp) - 1L))
+    }
   } else if (control_id == "cluster_size") {
     s$hierarchy$cluster_size <- maybe_int(suppressWarnings(as.numeric(value)))
   } else if (control_id == "cluster_size_dist") {
@@ -568,12 +634,17 @@ patch_spec_from_control <- function(spec, control_id, value) {
     if (fam == "gaussian") {
       if (is.null(s$outcome$residual_sd)) s$outcome$residual_sd <- 1.0
       if (is.null(s$outcome$error_dist)) s$outcome$error_dist <- "normal"
+      if (identical(s$design_type, "longitudinal_growth") && is.null(s$outcome$ar1_rho)) {
+        s$outcome$ar1_rho <- 0.30
+      }
     } else {
       s$outcome$residual_sd <- NULL
       s$outcome$error_dist <- NULL
       s$outcome$error_df <- NULL
       s$outcome$error_skew <- NULL
+      s$outcome$ar1_rho <- NULL
       s$simulation$parameter_grid$residual_sd <- NULL
+      s$simulation$parameter_grid$ar1_rho <- NULL
     }
     q_r <- as.integer(isTRUE(s$effects$random$intercept)) + length(s$effects$random$slopes)
     s$estimator$engine <- infer_default_engine(as.integer(s$hierarchy$levels), fam, q_r)
@@ -581,6 +652,8 @@ patch_spec_from_control <- function(spec, control_id, value) {
     s$outcome$link <- as.character(value)
   } else if (control_id == "residual_sd") {
     s$outcome$residual_sd <- suppressWarnings(as.numeric(value))
+  } else if (control_id == "ar1_rho") {
+    s$outcome$ar1_rho <- suppressWarnings(as.numeric(value))
   } else if (control_id == "error_dist") {
     ed <- as.character(value)
     s$outcome$error_dist <- ed
@@ -612,7 +685,7 @@ patch_spec_from_control <- function(spec, control_id, value) {
       s$simulation$parameter_grid$missing_rate <- NULL
     } else {
       if (!is_num_scalar(s$missingness$rate) || s$missingness$rate <= 0) {
-        s$missingness$rate <- 0.15
+        s$missingness$rate <- if (identical(mech, "monotone_dropout")) 0.20 else 0.15
       }
       if (mech == "MAR") {
         if (is.null(s$missingness$auxiliary)) s$missingness$auxiliary <- s$predictors[[1L]]$name
@@ -698,7 +771,7 @@ patch_spec_from_control <- function(spec, control_id, value) {
     }
   } else if (grepl("^grid_", control_id)) {
     gn <- sub("^grid_", "", control_id)
-    raw_str <- trimws(as.character(value))
+    raw_str <- trimws(paste(as.character(value), collapse = ","))
     if (!nzchar(raw_str)) {
       s$simulation$parameter_grid[[gn]] <- NULL
     } else {

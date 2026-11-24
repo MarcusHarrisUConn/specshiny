@@ -1,7 +1,7 @@
 {
   "$schema": "https://json-schema.org/draft/2020-12/schema",
   "$id": "https://github.com/MarcusHarrisUConn/specshiny/schema/spec_ir_v1.json",
-  "title": "specshiny Statistical & Simulation Specification IR v1.1.0",
+  "title": "specshiny Statistical & Simulation Specification IR v1.2.0",
   "type": "object",
   "required": [
     "schema_version",
@@ -20,7 +20,7 @@
   "properties": {
     "schema_version": {
       "type": "string",
-      "enum": ["1.0.0", "1.1.0"]
+      "enum": ["1.0.0", "1.1.0", "1.2.0"]
     },
     "metadata": {
       "type": "object",
@@ -38,7 +38,7 @@
     },
     "design_type": {
       "type": "string",
-      "enum": ["monte_carlo_lm", "power_analysis", "multilevel_sim", "two_level_mlm"]
+      "enum": ["monte_carlo_lm", "power_analysis", "multilevel_sim", "two_level_mlm", "longitudinal_growth"]
     },
     "hierarchy": {
       "type": "object",
@@ -51,6 +51,8 @@
         "cluster_size": { "type": ["integer", "null"], "minimum": 2 },
         "cluster_size_dist": { "type": ["string", "null"], "enum": ["fixed", "normal", "poisson", null] },
         "cluster_size_sd": { "type": ["number", "null"], "exclusiveMinimum": 0 },
+        "time_points": { "type": ["integer", "null"], "minimum": 3 },
+        "time_spacing": { "type": ["array", "null"], "items": { "type": "number" } },
         "cluster_name": { "type": ["string", "null"], "pattern": "^[A-Za-z][A-Za-z0-9_]*$", "maxLength": 64 },
         "unit_name": { "type": "string", "pattern": "^[A-Za-z][A-Za-z0-9_]*$", "maxLength": 64 },
         "icc": { "type": ["number", "null"], "minimum": 0, "exclusiveMaximum": 1 }
@@ -66,7 +68,7 @@
         "properties": {
           "name": { "type": "string", "pattern": "^[A-Za-z][A-Za-z0-9_]*$", "maxLength": 64 },
           "level": { "type": "integer", "enum": [1, 2] },
-          "distribution": { "type": "string", "enum": ["normal", "binary", "uniform"] },
+          "distribution": { "type": "string", "enum": ["normal", "binary", "uniform", "time"] },
           "mean": { "type": ["number", "null"] },
           "sd": { "type": ["number", "null"], "exclusiveMinimum": 0 },
           "prob": { "type": ["number", "null"], "exclusiveMinimum": 0, "exclusiveMaximum": 1 },
@@ -95,7 +97,8 @@
         "residual_sd": { "type": ["number", "null"], "exclusiveMinimum": 0 },
         "error_dist": { "type": ["string", "null"], "enum": ["normal", "t", "skewed", null] },
         "error_df": { "type": ["number", "null"], "exclusiveMinimum": 2 },
-        "error_skew": { "type": ["number", "null"], "minimum": -4, "maximum": 4 }
+        "error_skew": { "type": ["number", "null"], "minimum": -4, "maximum": 4 },
+        "ar1_rho": { "type": ["number", "null"], "exclusiveMinimum": -0.95, "exclusiveMaximum": 0.95 }
       }
     },
     "effects": {
@@ -161,7 +164,7 @@
       "required": ["mechanism", "rate", "target"],
       "additionalProperties": false,
       "properties": {
-        "mechanism": { "type": "string", "enum": ["none", "MCAR", "MAR"] },
+        "mechanism": { "type": "string", "enum": ["none", "MCAR", "MAR", "monotone_dropout"] },
         "rate": { "type": "number", "minimum": 0, "exclusiveMaximum": 0.95 },
         "target": { "type": "string", "const": "outcome" },
         "auxiliary": { "type": ["string", "null"] },

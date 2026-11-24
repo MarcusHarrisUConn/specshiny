@@ -1,6 +1,6 @@
 SPEC_ALLOWED_GRID_PARAMS <- c(
   "n_obs", "n_clusters", "cluster_size", "icc",
-  "focal_effect", "residual_sd", "missing_rate"
+  "focal_effect", "residual_sd", "missing_rate", "ar1_rho"
 )
 
 SPEC_MAX_GRID_CELLS <- 250L
@@ -13,9 +13,9 @@ SPEC_ALLOWED_KEYS <- list(
     "simulation", "defaults_rationale"
   ),
   metadata = c("title", "description", "source_prompt", "tags"),
-  hierarchy = c("levels", "n_obs", "n_clusters", "cluster_size", "cluster_size_dist", "cluster_size_sd", "cluster_name", "unit_name", "icc"),
+  hierarchy = c("levels", "n_obs", "n_clusters", "cluster_size", "cluster_size_dist", "cluster_size_sd", "time_points", "time_spacing", "cluster_name", "unit_name", "icc"),
   predictor = c("name", "level", "distribution", "mean", "sd", "prob", "min", "max", "centering", "role"),
-  outcome = c("name", "family", "link", "residual_sd", "error_dist", "error_df", "error_skew"),
+  outcome = c("name", "family", "link", "residual_sd", "error_dist", "error_df", "error_skew", "ar1_rho"),
   effects = c("intercept", "fixed", "interactions", "focal_predictor", "random"),
   interaction = c("terms", "beta"),
   random = c("intercept", "intercept_sd", "slopes", "corr_matrix"),
@@ -262,7 +262,7 @@ validate_spec_ir <- function(spec, strict = FALSE) {
         add_err("hierarchy.levels", "design_level_mismatch", "statistical",
                 "design_type 'monte_carlo_lm' requires hierarchy$levels == 1.")
       }
-      if (spec$design_type %in% c("multilevel_sim", "two_level_mlm") && levels_val != 2L) {
+      if (spec$design_type %in% c("multilevel_sim", "two_level_mlm", "longitudinal_growth") && levels_val != 2L) {
         add_err("hierarchy.levels", "design_level_mismatch", "statistical",
                 sprintf("design_type '%s' requires hierarchy$levels == 2.", spec$design_type))
       }
@@ -326,6 +326,38 @@ validate_spec_ir <- function(spec, strict = FALSE) {
       } else {
         icc_val <- as.numeric(h$icc)
       }
+
+      # Longitudinal time_points & time_spacing guardrails
+      if (identical(spec$design_type, "longitudinal_growth")) {
+        if (!is_whole_scalar(h$time_points) || as.integer(h$time_points) < 3L) {
+          add_err("hierarchy.time_points", "invalid_time_points", "statistical",
+                  "Longitudinal growth design requires integer hierarchy$time_points >= 3.")
+        } else {
+          tp_val <- as.integer(h$time_points)
+          if (!is.na(cluster_size_val) && cluster_size_val != tp_val) {
+            add_err("hierarchy.cluster_size", "time_points_cluster_size_mismatch", "statistical",
+                    sprintf("Longitudinal growth requires hierarchy$cluster_size (%d) == hierarchy$time_points (%d).", cluster_size_val, tp_val))
+          }
+          if (!identical(cs_dist, "fixed")) {
+            add_err("hierarchy.cluster_size_dist", "longitudinal_requires_fixed_waves", "statistical",
+                    "Longitudinal growth designs use fixed wave schedules; use missingness$mechanism = 'monotone_dropout' for attrition.")
+          }
+          ts <- h$time_spacing
+          if (!is.numeric(ts) || length(ts) != tp_val || any(!is.finite(ts)) || any(diff(ts) <= 0)) {
+            add_err("hierarchy.time_spacing", "invalid_time_spacing", "statistical",
+                    sprintf("hierarchy$time_spacing must be a strictly increasing finite numeric vector of length %d.", tp_val))
+          }
+        }
+      } else {
+        if (!is.null(h$time_points)) {
+          add_err("hierarchy.time_points", "time_points_non_longitudinal", "statistical",
+                  "hierarchy$time_points is only valid for design_type == 'longitudinal_growth'.")
+        }
+        if (!is.null(h$time_spacing)) {
+          add_err("hierarchy.time_spacing", "time_spacing_non_longitudinal", "statistical",
+                  "hierarchy$time_spacing is only valid for design_type == 'longitudinal_growth'.")
+        }
+      }
     }
   }
 
@@ -364,10 +396,15 @@ validate_spec_ir <- function(spec, strict = FALSE) {
         }
       }
 
-      dist_ok <- is_chr_scalar(p$distribution) && p$distribution %in% c("normal", "binary", "uniform")
+      dist_ok <- is_chr_scalar(p$distribution) && p$distribution %in% c("normal", "binary", "uniform", "time")
       if (!dist_ok) {
         add_err(paste0(p_path, ".distribution"), "invalid_distribution", "schema",
-                "Predictor distribution must be 'normal', 'binary', or 'uniform'.")
+                "Predictor distribution must be 'normal', 'binary', 'uniform', or 'time'.")
+      } else if (p$distribution == "time") {
+        if (!identical(spec$design_type, "longitudinal_growth") || !identical(as.integer(p$level %||% 0L), 1L)) {
+          add_err(paste0(p_path, ".distribution"), "time_predictor_non_longitudinal", "statistical",
+                  "Predictor distribution 'time' is only valid for level-1 predictors in 'longitudinal_growth' designs.")
+        }
       } else if (p$distribution == "normal") {
         if (!is_num_scalar(p$mean)) {
           add_err(paste0(p_path, ".mean"), "invalid_normal_mean", "schema",
@@ -498,10 +535,23 @@ validate_spec_ir <- function(spec, strict = FALSE) {
                     "Skewed errors require non-zero finite outcome$error_skew in [-4, 4].")
           }
         }
+        if (!is.null(o$ar1_rho)) {
+          if (!identical(spec$design_type, "longitudinal_growth")) {
+            add_err("outcome.ar1_rho", "ar1_non_longitudinal", "statistical",
+                    "outcome$ar1_rho is only valid for design_type == 'longitudinal_growth'.")
+          } else if (!is_num_scalar(o$ar1_rho) || abs(o$ar1_rho) >= 0.95) {
+            add_err("outcome.ar1_rho", "invalid_ar1_rho", "statistical",
+                    "Stationary AR(1) autocorrelation requires finite outcome$ar1_rho strictly in (-0.95, 0.95).")
+          }
+        }
       } else {
         if (!is.null(o$error_dist) && !identical(o$error_dist, "normal")) {
           add_err("outcome.error_dist", "error_dist_non_gaussian", "statistical",
                   sprintf("outcome$error_dist applies only to Gaussian outcomes, not '%s'.", out_family))
+        }
+        if (!is.null(o$ar1_rho)) {
+          add_err("outcome.ar1_rho", "ar1_non_gaussian", "statistical",
+                  "outcome$ar1_rho applies only to Gaussian longitudinal models.")
         }
       }
     }
@@ -704,11 +754,15 @@ validate_spec_ir <- function(spec, strict = FALSE) {
   } else {
     m <- spec$missingness
     check_extra_keys(m, SPEC_ALLOWED_KEYS$missingness, "missingness")
-    if (!is_chr_scalar(m$mechanism) || !(m$mechanism %in% c("none", "MCAR", "MAR"))) {
+    if (!is_chr_scalar(m$mechanism) || !(m$mechanism %in% c("none", "MCAR", "MAR", "monotone_dropout"))) {
       add_err("missingness.mechanism", "invalid_missing_mechanism", "schema",
-              "missingness$mechanism must be 'none', 'MCAR', or 'MAR'.")
+              "missingness$mechanism must be 'none', 'MCAR', 'MAR', or 'monotone_dropout'.")
     } else {
       miss_mech <- m$mechanism
+      if (identical(miss_mech, "monotone_dropout") && !identical(spec$design_type, "longitudinal_growth")) {
+        add_err("missingness.mechanism", "monotone_dropout_non_longitudinal", "statistical",
+                "missingness$mechanism == 'monotone_dropout' requires design_type == 'longitudinal_growth'.")
+      }
     }
 
     if (!is_num_scalar(m$rate) || m$rate < 0 || m$rate >= 0.95) {
@@ -719,7 +773,7 @@ validate_spec_ir <- function(spec, strict = FALSE) {
         add_err("missingness.rate", "nonzero_rate_with_no_mechanism", "statistical",
                 "missingness$rate must be 0 when missingness$mechanism == 'none'.")
       }
-      if (miss_mech %in% c("MCAR", "MAR") && m$rate <= 0) {
+      if (miss_mech %in% c("MCAR", "MAR", "monotone_dropout") && m$rate <= 0) {
         add_err("missingness.rate", "zero_rate_with_active_mechanism", "statistical",
                 sprintf("missingness$rate must be > 0 when missingness$mechanism == '%s'.", miss_mech))
       }
@@ -727,7 +781,7 @@ validate_spec_ir <- function(spec, strict = FALSE) {
 
     if (!is_chr_scalar(m$target) || !identical(m$target, "outcome")) {
       add_err("missingness.target", "invalid_missing_target", "schema",
-              "missingness$target must be 'outcome' in IR schema v1.0.0.")
+              "missingness$target must be 'outcome' in IR schema.")
     }
 
     if (identical(miss_mech, "MAR")) {
@@ -738,6 +792,15 @@ validate_spec_ir <- function(spec, strict = FALSE) {
       if (!is_num_scalar(m$strength) || m$strength == 0) {
         add_err("missingness.strength", "invalid_mar_strength", "statistical",
                 "MAR missingness requires finite non-zero numeric missingness$strength.")
+      }
+    } else if (identical(miss_mech, "monotone_dropout") && !is.null(m$auxiliary)) {
+      if (!is_chr_scalar(m$auxiliary) || !(m$auxiliary %in% pred_names)) {
+        add_err("missingness.auxiliary", "invalid_mar_auxiliary", "statistical",
+                "monotone_dropout auxiliary must be NULL or match an existing predictor.")
+      }
+      if (!is.null(m$strength) && (!is_num_scalar(m$strength) || m$strength == 0)) {
+        add_err("missingness.strength", "invalid_mar_strength", "statistical",
+                "monotone_dropout strength (when provided) must be finite non-zero numeric.")
       }
     }
   }
@@ -845,6 +908,9 @@ validate_spec_ir <- function(spec, strict = FALSE) {
           } else if (gn == "cluster_size") {
             if (!identical(levels_val, 2L)) {
               add_err(gpath, "grid_param_inapplicable", "statistical", "Grid parameter 'cluster_size' applies only to 2-level designs.")
+            } else if (identical(spec$design_type, "longitudinal_growth")) {
+              add_err(gpath, "grid_param_inapplicable", "statistical",
+                      "Grid parameter 'cluster_size' is not supported for longitudinal_growth designs with fixed time_spacing.")
             } else if (any(vals != floor(vals) | vals < max(2L, q_rand + 1L))) {
               add_err(gpath, "grid_value_out_of_bounds", "statistical",
                       sprintf("All 'cluster_size' grid values must be integers >= %d for identifiability.", max(2L, q_rand + 1L)))
@@ -864,7 +930,7 @@ validate_spec_ir <- function(spec, strict = FALSE) {
           } else if (gn == "missing_rate") {
             if (identical(miss_mech, "none")) {
               add_err(gpath, "grid_param_inapplicable", "statistical",
-                      "Grid parameter 'missing_rate' requires missingness$mechanism to be 'MCAR' or 'MAR'.")
+                      "Grid parameter 'missing_rate' requires missingness$mechanism to be 'MCAR', 'MAR', or 'monotone_dropout'.")
             } else if (any(vals < 0 | vals >= 0.95)) {
               add_err(gpath, "grid_value_out_of_bounds", "statistical", "All 'missing_rate' grid values must lie in [0, 0.95).")
             }
@@ -872,6 +938,14 @@ validate_spec_ir <- function(spec, strict = FALSE) {
             if (is.null(focal_pred)) {
               add_err(gpath, "grid_param_inapplicable", "statistical",
                       "Grid parameter 'focal_effect' requires effects$focal_predictor to be set.")
+            }
+          } else if (gn == "ar1_rho") {
+            if (!identical(spec$design_type, "longitudinal_growth") || !identical(out_family, "gaussian")) {
+              add_err(gpath, "grid_param_inapplicable", "statistical",
+                      "Grid parameter 'ar1_rho' applies only to Gaussian longitudinal_growth designs.")
+            } else if (any(abs(vals) >= 0.95)) {
+              add_err(gpath, "grid_value_out_of_bounds", "statistical",
+                      "All 'ar1_rho' grid values must lie strictly in (-0.95, 0.95).")
             }
           }
         }

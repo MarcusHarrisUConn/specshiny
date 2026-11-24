@@ -2,7 +2,7 @@ test_that("new_spec_ir creates valid 1-level and 2-level specs with defaults rat
   s1 <- new_spec_ir()
   expect_true(is_spec_ir(s1))
   expect_true(is_valid_spec_ir(s1))
-  expect_equal(s1$schema_version, "1.1.0")
+  expect_equal(s1$schema_version, "1.2.0")
   expect_equal(s1$hierarchy$levels, 1L)
   expect_equal(spec_total_n(s1), 200L)
   expect_equal(spec_implied_intercept_sd(s1), 0)

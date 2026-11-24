@@ -73,6 +73,8 @@ compile_quarto_report <- function(spec,
     "None (complete data)"
   } else if (identical(spec$missingness$mechanism, "MCAR")) {
     sprintf("MCAR (%.1f%% on `%s`)", 100 * spec$missingness$rate, spec$outcome$name)
+  } else if (identical(spec$missingness$mechanism, "monotone_dropout")) {
+    sprintf("Monotone dropout (%.1f%% cumulative attrition on `%s`)", 100 * spec$missingness$rate, spec$outcome$name)
   } else {
     sprintf("MAR (%.1f%% on `%s`, driven by `%s`, slope = %s)",
             100 * spec$missingness$rate, spec$outcome$name,

@@ -223,19 +223,26 @@ test_that("migrate_spec_ir upgrades v1.0.0 specs cleanly and rejects incompatibl
   expect_true("schema_outdated" %in% v_old$warnings$code)
 
   migrated <- migrate_spec_ir(legacy)
-  expect_equal(migrated$schema_version, "1.1.0")
+  expect_equal(migrated$schema_version, "1.2.0")
   expect_equal(migrated$hierarchy$cluster_size_dist, "fixed")
   expect_equal(migrated$outcome$error_dist, "normal")
   expect_equal(migrated$effects$interactions, list())
-  expect_true(length(attr(migrated, "migration_log")) >= 3L)
+  expect_true(length(attr(migrated, "migration_log")) >= 4L)
   expect_equal(nrow(validate_spec_ir(migrated)$warnings), 0L)
+
+  # Direct v1.1.0 -> v1.2.0 migration
+  v11 <- unclass(migrated)
+  v11$schema_version <- "1.1.0"
+  v11_up <- migrate_spec_ir(v11)
+  expect_equal(v11_up$schema_version, "1.2.0")
+  expect_true(any(grepl("1.1.0.*1.2.0", attr(v11_up, "migration_log"))))
 
   # Round-trip auto_migrate via YAML file
   f_leg <- tempfile(fileext = ".yaml")
   on.exit(unlink(f_leg), add = TRUE)
   writeLines(yaml::as.yaml(legacy), f_leg)
   auto_up <- read_spec_ir(f_leg, auto_migrate = TRUE)
-  expect_equal(auto_up$schema_version, "1.1.0")
+  expect_equal(auto_up$schema_version, "1.2.0")
 
   # Idempotent when already current
   again <- migrate_spec_ir(migrated)

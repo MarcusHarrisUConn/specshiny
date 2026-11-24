@@ -1,3 +1,26 @@
+# specshiny 0.4.0
+
+## New Longitudinal, Comparison & Template Capabilities (Zero New Hard Dependencies)
+
+* Added longitudinal growth-curve modeling (`design_type = "longitudinal_growth"`, IR schema v1.2.0 with chained forward migration `1.0.0 -> 1.1.0 -> 1.2.0` via `migrate_spec_ir()`):
+  - Supports repeated-measures wave count (`hierarchy$time_points`), custom strictly increasing wave schedules (`hierarchy$time_spacing`), `distribution = "time"` predictors, random intercepts and random time slopes, stationary within-subject AR(1) residual autocorrelation (`outcome$ar1_rho` strictly in `(-0.95, 0.95)` plus `ar1_rho` parameter grid sweeps), and strictly monotone post-baseline attrition (`missingness$mechanism = "monotone_dropout"`, both unconditional and auxiliary-driven MAR).
+  - Wired end-to-end through `validate_spec_ir()`, `spec_to_math()`, `spec_to_controls()`, `patch_spec_from_control()`, `translator_rule()`, `refine_spec()`, `mod_spec_preview_server()`, `compile_r_script()` (passing strict `verify_compiled_r_ast()`), and `compile_quarto_report()`.
+* Added multi-scenario design comparison via `compare_specs()` (with `print()` and `as.data.frame()` S3 methods), reporting total $N$, Kish / Eldridge-Ashby-Kerry cluster design effect ($\text{DEFF} = 1 + (\bar{n}_j(1 + \text{CV}^2) - 1)\,\text{ICC}$), effective sample size $N_{\text{eff}} = N / \text{DEFF}$, level-1/level-2 variance decomposition, AR(1) autocorrelation, synthesized UI control counts, pairwise semantic IR diffs vs. baseline, and optional bounded comparative power estimates (`run_power = TRUE`).
+* Added an extensible domain template registry (`list_spec_templates()`, `use_spec_template()`, `register_spec_template()`, `unregister_spec_template()`) shipping 5 immutable built-in templates (`cluster_rct`, `cross_level_mlm`, `longitudinal_growth_ar1`, `logistic_power`, `factorial_ols`), ergonomic parameter overrides and NL refinement hooks, and strict `assert_valid_spec_ir()` + `verify_compiled_r_ast()` registration gating for custom templates.
+
+## Coverage Audit & Latent Bug Fixes
+
+* Audited line coverage with `covr::package_coverage()` (lifting overall package coverage from 82.84% to 93.73%) and fixed 4 latent bugs:
+  1. **Remote LLM Error Glue-Interpolation Hardening (`R/translator-backends.R`, `R/security.R`)**: Escaped untrusted error payloads in `cli::cli_abort()` / `rlang::abort()` so malformed remote JSON or AST violation messages containing `{...}` braces cannot crash `glue` or inject expressions.
+  2. **Correlated Predictor Matrix Resize on Implicit Refinement Additions (`R/translator-nl.R`)**: Automatically resized `predictor_corr` when `refine_spec()` implicitly introduces a new predictor via an interaction or random slope.
+  3. **Preview Simulator Proportional Cluster-SD & Longitudinal Scaling (`R/mod-preview.R`)**: Scaled `cluster_size_sd` proportionally when shrinking large unbalanced normal-cluster previews, and preserved wave count (`time_points`) while scaling subject count (`n_clusters`) for large longitudinal previews.
+  4. **Vector-Safe Parameter Grid Patching (`R/ui-synthesize.R`)**: Collapsed multi-element character/numeric inputs safely before splitting in `patch_spec_from_control()` for `grid_*` controls.
+
+## Documentation & Vignettes
+
+* Added a fifth executable vignette (`vignettes/longitudinal-and-templates.Rmd`) demonstrating longitudinal AR(1) growth curves with monotone dropout, `compare_specs()` efficiency & power trade-offs, and custom template registration.
+* Updated `README.md`, `inst/guides/specshiny-guide.Rmd`, `_pkgdown.yml`, `cran-comments.md`, and bundled v1.2.0 YAML examples.
+
 # specshiny 0.3.0
 
 ## New Modeling & Simulation Capabilities (All AST-Verified)

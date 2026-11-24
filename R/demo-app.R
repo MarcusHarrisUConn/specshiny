@@ -45,6 +45,14 @@ spec_presets <- function() {
         "treatment effect 0.4, sweep clusters across 30, 60, 90 and sweep ICC across 0.1, 0.2, 0.3,",
         "200 replications"
       )
+    ),
+    longitudinal_growth_ar1 = list(
+      label = "Longitudinal Growth Curve (AR(1) + Monotone Dropout)",
+      prompt = paste(
+        "Longitudinal growth curve simulation with 120 subjects across 5 waves,",
+        "ICC 0.4, AR(1) correlation 0.35, growth slope 0.3, random slope for time,",
+        "treatment effect 0.25, 25% monotone dropout, 250 replications"
+      )
     )
   )
 }

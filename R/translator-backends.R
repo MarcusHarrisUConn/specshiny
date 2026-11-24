@@ -190,7 +190,7 @@ perform_bounded_json_request <- function(req, max_bytes, secret = NULL) {
     error = function(e) {
       safe_msg <- sanitize_secret_error(conditionMessage(e), secret = secret)
       cli::cli_abort(
-        c("LLM HTTP request failed.", "x" = safe_msg),
+        c("LLM HTTP request failed.", "x" = "{safe_msg}"),
         class = "specshiny_llm_http_error"
       )
     }
@@ -209,8 +209,9 @@ perform_bounded_json_request <- function(req, max_bytes, secret = NULL) {
   tryCatch(
     jsonlite::fromJSON(txt, simplifyVector = FALSE),
     error = function(e) {
+      safe_msg <- sanitize_secret_error(conditionMessage(e), secret = secret)
       cli::cli_abort(
-        c("LLM endpoint returned malformed HTTP JSON envelope.", "x" = sanitize_secret_error(conditionMessage(e), secret = secret)),
+        c("LLM endpoint returned malformed HTTP JSON envelope.", "x" = "{safe_msg}"),
         class = "specshiny_llm_parse_error"
       )
     }
@@ -345,8 +346,9 @@ unpack_llm_json_payload <- function(content, prompt = NULL, max_bytes = 524288L)
   raw_obj <- tryCatch(
     jsonlite::fromJSON(cleaned, simplifyVector = FALSE),
     error = function(e) {
+      err_msg <- conditionMessage(e)
       cli::cli_abort(
-        c("LLM backend did not return valid JSON.", "x" = conditionMessage(e)),
+        c("LLM backend did not return valid JSON.", "x" = "{err_msg}"),
         class = "specshiny_llm_parse_error"
       )
     }

@@ -171,6 +171,9 @@ spec_to_serializable <- function(spec, target = c("yaml", "json")) {
 
   # Ensure JSON keeps arrays as arrays and empty maps as objects
   if (target == "json") {
+    if (is.list(x$hierarchy) && !is.null(x$hierarchy$time_spacing)) {
+      x$hierarchy$time_spacing <- I(as.numeric(x$hierarchy$time_spacing))
+    }
     if (is.list(x$metadata)) {
       x$metadata$tags <- I(as.character(x$metadata$tags %||% character()))
     }

@@ -71,7 +71,7 @@ tryCatch(
 ## 2. Forward-Compatible Schema Migration (`migrate_spec_ir()`)
 
 Specifications archived under schema `v1.0.0` validate with a structured
-`schema_outdated` warning and upgrade cleanly to `v1.1.0` via
+`schema_outdated` warning and upgrade cleanly to `v1.2.0` via
 `migrate_spec_ir()`:
 
 ```{r}

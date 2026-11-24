@@ -1,0 +1,95 @@
+schema_version: 1.2.0
+metadata:
+  title: Longitudinal Growth Curve with AR(1) & Monotone Dropout
+  description: Repeated-measures linear growth model comparing treatment vs. control
+    trajectories under AR(1) errors and monotone attrition.
+  source_prompt: ~
+  tags: []
+design_type: longitudinal_growth
+hierarchy:
+  levels: 2
+  n_clusters: 120
+  cluster_size: 5
+  cluster_size_dist: fixed
+  cluster_size_sd: ~
+  time_points: 5
+  time_spacing:
+    - 0.0
+    - 1.0
+    - 2.0
+    - 3.0
+    - 4.0
+  cluster_name: subject
+  unit_name: wave
+  icc: 0.4
+predictors:
+  - name: time
+    level: 1
+    distribution: time
+    mean: ~
+    sd: ~
+    prob: ~
+    min: ~
+    max: ~
+    centering: none
+    role: covariate
+  - name: treatment
+    level: 2
+    distribution: binary
+    mean: ~
+    sd: ~
+    prob: 0.5
+    min: ~
+    max: ~
+    centering: none
+    role: treatment
+outcome:
+  name: 'y'
+  family: gaussian
+  link: identity
+  residual_sd: 1.0
+  error_dist: normal
+  error_df: ~
+  error_skew: ~
+  ar1_rho: 0.35
+effects:
+  intercept: 0.0
+  fixed:
+    time: 0.3
+    treatment: 0.15
+  interactions:
+    - terms:
+        - time
+        - treatment
+      beta: 0.25
+  focal_predictor: time:treatment
+  random:
+    intercept: yes
+    intercept_sd: ~
+    slopes:
+      - predictor: time
+        sd: 0.25
+    corr_matrix:
+      - - 1.0
+        - 0.1
+      - - 0.1
+        - 1.0
+missingness:
+  mechanism: monotone_dropout
+  rate: 0.25
+  target: outcome
+  auxiliary: ~
+  strength: ~
+estimator:
+  engine: lmer
+  reml: yes
+  conf_level: 0.95
+  missing_handling: complete_case
+simulation:
+  n_reps: 300
+  seed: 2026
+  alpha: 0.05
+  parameter_grid: {}
+defaults_rationale:
+  estimator.engine: Selected 'lmer' estimator matching the 2-level gaussian model.
+

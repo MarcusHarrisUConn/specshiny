@@ -7,7 +7,7 @@
 spec_predictor(
   name,
   level = 1L,
-  distribution = c("normal", "binary", "uniform"),
+  distribution = c("normal", "binary", "uniform", "time"),
   mean = NULL,
   sd = NULL,
   prob = NULL,
@@ -22,7 +22,8 @@ spec_predictor(
 
 \item{level}{Integer scalar (\code{1L} or \code{2L}) indicating the hierarchy level.}
 
-\item{distribution}{One of \code{"normal"}, \code{"binary"}, or \code{"uniform"}.}
+\item{distribution}{One of \code{"normal"}, \code{"binary"}, \code{"uniform"}, or \code{"time"}
+(for wave-indexed longitudinal time predictors).}
 
 \item{mean}{Numeric mean for \code{"normal"} predictors (defaults to \code{0}).}
 

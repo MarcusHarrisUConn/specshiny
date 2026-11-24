@@ -1,15 +1,14 @@
 #' Migrate a `spec_ir` object to the current IR schema version
 #'
-#' Performs forward-compatible schema migration from earlier IR versions (e.g.,
-#' `"1.0.0"`) to the current canonical schema version (`"1.1.0"`), populating
-#' newly introduced fields with explicit backwards-compatible defaults and
-#' attaching an audit trail in `attr(result, "migration_log")`. Provides crisp
-#' version-mismatch diagnostics when given an unrecognized or newer future
-#' schema version.
+#' Performs forward-compatible chained schema migration across IR versions
+#' (`"1.0.0"` -> `"1.1.0"` -> `"1.2.0"`), populating newly introduced fields
+#' with explicit backwards-compatible defaults and attaching an audit trail in
+#' `attr(result, "migration_log")`. Provides crisp `specshiny_version_mismatch`
+#' diagnostics when given an unrecognized or newer future schema version.
 #'
 #' @param spec A `spec_ir` object or named list deserialized from YAML/JSON.
 #' @param target_version Character scalar target schema version (defaults to
-#'   `"1.1.0"`).
+#'   `"1.2.0"`).
 #' @param validate Logical; if `TRUE` (default), validates the migrated spec
 #'   with [assert_valid_spec_ir()].
 #'
@@ -20,7 +19,9 @@
 #' legacy <- new_spec_ir(validate = FALSE)
 #' legacy$schema_version <- "1.0.0"
 #' legacy$hierarchy$cluster_size_dist <- NULL
+#' legacy$hierarchy$time_points <- NULL
 #' legacy$outcome$error_dist <- NULL
+#' legacy$outcome$ar1_rho <- NULL
 #' legacy$effects$interactions <- NULL
 #' upgraded <- migrate_spec_ir(legacy)
 #' upgraded$schema_version
@@ -72,12 +73,14 @@ migrate_spec_ir <- function(spec, target_version = SPEC_SCHEMA_VERSION, validate
     return(out)
   }
 
-  # Migrate 1.0.0 -> 1.1.0 cleanly
   s <- unclass(spec)
+  cur_ver <- from_ver
   log_entries <- character()
 
-  if (identical(from_ver, "1.0.0") && identical(target_version, "1.1.0")) {
+  # Step 1: 1.0.0 -> 1.1.0
+  if (identical(cur_ver, "1.0.0") && utils::compareVersion(target_version, "1.1.0") >= 0L) {
     s$schema_version <- "1.1.0"
+    cur_ver <- "1.1.0"
     log_entries <- c(log_entries, "Updated schema_version from '1.0.0' to '1.1.0'.")
 
     if (is.list(s$hierarchy)) {
@@ -109,6 +112,24 @@ migrate_spec_ir <- function(spec, target_version = SPEC_SCHEMA_VERSION, validate
     if (is.list(s$effects) && !("interactions" %in% names(s$effects))) {
       s$effects$interactions <- list()
       log_entries <- c(log_entries, "Initialized effects$interactions = list().")
+    }
+  }
+
+  # Step 2: 1.1.0 -> 1.2.0
+  if (identical(cur_ver, "1.1.0") && utils::compareVersion(target_version, "1.2.0") >= 0L) {
+    s$schema_version <- "1.2.0"
+    cur_ver <- "1.2.0"
+    log_entries <- c(log_entries, "Updated schema_version from '1.1.0' to '1.2.0'.")
+
+    if (is.list(s$hierarchy)) {
+      if (!("time_points" %in% names(s$hierarchy))) s$hierarchy$time_points <- NULL
+      if (!("time_spacing" %in% names(s$hierarchy))) s$hierarchy$time_spacing <- NULL
+      log_entries <- c(log_entries, "Initialized optional longitudinal hierarchy$time_points and hierarchy$time_spacing.")
+    }
+
+    if (is.list(s$outcome) && !("ar1_rho" %in% names(s$outcome))) {
+      s$outcome$ar1_rho <- NULL
+      log_entries <- c(log_entries, "Initialized optional outcome$ar1_rho = NULL.")
     }
   }
 

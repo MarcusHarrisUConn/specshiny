@@ -1,6 +1,6 @@
 # Current IR schema version and supported versions
-SPEC_SCHEMA_VERSION <- "1.1.0"
-SPEC_SUPPORTED_SCHEMA_VERSIONS <- c("1.0.0", "1.1.0")
+SPEC_SCHEMA_VERSION <- "1.2.0"
+SPEC_SUPPORTED_SCHEMA_VERSIONS <- c("1.0.0", "1.1.0", "1.2.0")
 
 #' Supported specification design types
 #'
@@ -11,7 +11,7 @@ SPEC_SUPPORTED_SCHEMA_VERSIONS <- c("1.0.0", "1.1.0")
 #' @examples
 #' spec_design_types()
 spec_design_types <- function() {
-  c("monte_carlo_lm", "power_analysis", "multilevel_sim", "two_level_mlm")
+  c("monte_carlo_lm", "power_analysis", "multilevel_sim", "two_level_mlm", "longitudinal_growth")
 }
 
 #' Locate the bundled JSON Schema for the `spec_ir` grammar
@@ -31,7 +31,8 @@ spec_schema_path <- function() {
 #'
 #' @param name Character scalar giving a valid R identifier for the predictor.
 #' @param level Integer scalar (`1L` or `2L`) indicating the hierarchy level.
-#' @param distribution One of `"normal"`, `"binary"`, or `"uniform"`.
+#' @param distribution One of `"normal"`, `"binary"`, `"uniform"`, or `"time"`
+#'   (for wave-indexed longitudinal time predictors).
 #' @param mean Numeric mean for `"normal"` predictors (defaults to `0`).
 #' @param sd Positive numeric SD for `"normal"` predictors (defaults to `1`).
 #' @param prob Numeric probability in `(0, 1)` for `"binary"` predictors (defaults to `0.5`).
@@ -47,7 +48,7 @@ spec_schema_path <- function() {
 #' spec_predictor("trt", level = 2L, distribution = "binary", prob = 0.5, role = "treatment")
 spec_predictor <- function(name,
                            level = 1L,
-                           distribution = c("normal", "binary", "uniform"),
+                           distribution = c("normal", "binary", "uniform", "time"),
                            mean = NULL,
                            sd = NULL,
                            prob = NULL,
@@ -172,7 +173,10 @@ new_spec_ir <- function(design_type = "monte_carlo_lm",
   }
 
   # Infer default levels from design_type if omitted
-  default_levels <- if (identical(design_type, "multilevel_sim") || identical(design_type, "two_level_mlm")) {
+  is_longitudinal <- identical(design_type, "longitudinal_growth")
+  default_levels <- if (identical(design_type, "multilevel_sim") ||
+                        identical(design_type, "two_level_mlm") ||
+                        is_longitudinal) {
     2L
   } else {
     1L
@@ -191,31 +195,62 @@ new_spec_ir <- function(design_type = "monte_carlo_lm",
   # Build hierarchy defaults cleanly
   if (identical(levels_val, 2L)) {
     n_clusters <- if (is.null(hierarchy$n_clusters)) {
-      add_rationale("hierarchy.n_clusters", "Defaulted to 40 clusters to provide stable random-effect variance estimation.")
-      40L
+      def_j <- if (is_longitudinal) 100L else 40L
+      add_rationale("hierarchy.n_clusters", sprintf("Defaulted to %d level-2 units for stable random-effect variance estimation.", def_j))
+      def_j
     } else {
       maybe_int(hierarchy$n_clusters)
     }
-    cluster_size <- if (is.null(hierarchy$cluster_size)) {
-      add_rationale("hierarchy.cluster_size", "Defaulted to 20 units per cluster for reliable within-cluster estimation.")
-      20L
+
+    time_points <- NULL
+    time_spacing <- NULL
+    if (is_longitudinal) {
+      time_points <- if (!is.null(hierarchy$time_points)) {
+        maybe_int(hierarchy$time_points)
+      } else if (!is.null(hierarchy$cluster_size)) {
+        maybe_int(hierarchy$cluster_size)
+      } else {
+        add_rationale("hierarchy.time_points", "Defaulted to 5 repeated measurement waves for linear growth-curve estimation.")
+        5L
+      }
+      cluster_size <- if (is.null(hierarchy$cluster_size)) time_points else maybe_int(hierarchy$cluster_size)
+      time_spacing <- if (is.null(hierarchy$time_spacing)) {
+        if (is_whole_scalar(time_points) && as.integer(time_points) >= 1L) {
+          seq(0, as.integer(time_points) - 1L)
+        } else {
+          NULL
+        }
+      } else {
+        as.numeric(hierarchy$time_spacing)
+      }
+      cluster_name <- hierarchy$cluster_name %||% "subject"
+      unit_name <- hierarchy$unit_name %||% "wave"
     } else {
-      maybe_int(hierarchy$cluster_size)
+      cluster_size <- if (is.null(hierarchy$cluster_size)) {
+        add_rationale("hierarchy.cluster_size", "Defaulted to 20 units per cluster for reliable within-cluster estimation.")
+        20L
+      } else {
+        maybe_int(hierarchy$cluster_size)
+      }
+      cluster_name <- if (is.null(hierarchy$cluster_name)) {
+        add_rationale("hierarchy.cluster_name", "Defaulted cluster identifier name to 'cluster'.")
+        "cluster"
+      } else {
+        hierarchy$cluster_name
+      }
+      unit_name <- if (is.null(hierarchy$unit_name)) {
+        "observation"
+      } else {
+        hierarchy$unit_name
+      }
+      if (!is.null(hierarchy$time_points)) time_points <- maybe_int(hierarchy$time_points)
+      if (!is.null(hierarchy$time_spacing)) time_spacing <- as.numeric(hierarchy$time_spacing)
     }
-    cluster_name <- if (is.null(hierarchy$cluster_name)) {
-      add_rationale("hierarchy.cluster_name", "Defaulted cluster identifier name to 'cluster'.")
-      "cluster"
-    } else {
-      hierarchy$cluster_name
-    }
-    unit_name <- if (is.null(hierarchy$unit_name)) {
-      "observation"
-    } else {
-      hierarchy$unit_name
-    }
+
     icc <- if (is.null(hierarchy$icc)) {
-      add_rationale("hierarchy.icc", "Defaulted intraclass correlation (ICC) to 0.15, a typical moderate clustering level.")
-      0.15
+      def_icc <- if (is_longitudinal) 0.40 else 0.15
+      add_rationale("hierarchy.icc", sprintf("Defaulted intraclass correlation (ICC) to %.2f.", def_icc))
+      def_icc
     } else {
       hierarchy$icc
     }
@@ -237,6 +272,8 @@ new_spec_ir <- function(design_type = "monte_carlo_lm",
       cluster_size = cluster_size,
       cluster_size_dist = cs_dist,
       cluster_size_sd = cs_sd,
+      time_points = time_points,
+      time_spacing = time_spacing,
       cluster_name = cluster_name,
       unit_name = unit_name,
       icc = icc
@@ -256,6 +293,8 @@ new_spec_ir <- function(design_type = "monte_carlo_lm",
       cluster_size = NULL,
       cluster_size_dist = NULL,
       cluster_size_sd = NULL,
+      time_points = hierarchy$time_points,
+      time_spacing = hierarchy$time_spacing,
       cluster_name = NULL,
       unit_name = unit_name,
       icc = hierarchy$icc
@@ -264,8 +303,13 @@ new_spec_ir <- function(design_type = "monte_carlo_lm",
 
   # Predictors defaults
   if (is.null(predictors)) {
-    add_rationale("predictors", "Added a default standardized normal focal predictor 'x1' (mean = 0, sd = 1).")
-    pred_list <- list(spec_predictor("x1", level = 1L, distribution = "normal", mean = 0, sd = 1, role = "focal"))
+    if (is_longitudinal) {
+      add_rationale("predictors", "Added default longitudinal wave predictor 'time' (level-1 wave index).")
+      pred_list <- list(spec_predictor("time", level = 1L, distribution = "time", centering = "none", role = "focal"))
+    } else {
+      add_rationale("predictors", "Added a default standardized normal focal predictor 'x1' (mean = 0, sd = 1).")
+      pred_list <- list(spec_predictor("x1", level = 1L, distribution = "normal", mean = 0, sd = 1, role = "focal"))
+    }
   } else {
     pred_list <- lapply(predictors, normalize_predictor)
   }
@@ -319,6 +363,16 @@ new_spec_ir <- function(design_type = "monte_carlo_lm",
   } else {
     outcome$error_skew
   }
+  out_ar1 <- if (is_longitudinal && identical(out_family, "gaussian")) {
+    if (is.null(outcome$ar1_rho)) {
+      add_rationale("outcome.ar1_rho", "Defaulted within-subject AR(1) residual autocorrelation to 0.30.")
+      0.30
+    } else {
+      outcome$ar1_rho
+    }
+  } else {
+    outcome$ar1_rho
+  }
   outcome_obj <- list(
     name = out_name,
     family = out_family,
@@ -326,7 +380,8 @@ new_spec_ir <- function(design_type = "monte_carlo_lm",
     residual_sd = out_resid_sd,
     error_dist = out_err_dist,
     error_df = out_err_df,
-    error_skew = out_err_skew
+    error_skew = out_err_skew,
+    ar1_rho = out_ar1
   )
 
   # Effects defaults
@@ -364,7 +419,18 @@ new_spec_ir <- function(design_type = "monte_carlo_lm",
   } else {
     random_in$intercept
   }
-  rand_slopes <- normalize_slopes(random_in$slopes %||% list())
+  rand_slopes <- if (is.null(random_in$slopes) && is_longitudinal) {
+    time_preds <- vapply(pred_list, function(p) identical(p$distribution, "time"), logical(1))
+    if (any(time_preds)) {
+      t_nm <- pred_list[[which(time_preds)[[1L]]]]$name
+      add_rationale(paste0("effects.random.slopes.", t_nm, ".sd"), "Defaulted longitudinal random time-slope SD to 0.25.")
+      list(list(predictor = t_nm, sd = 0.25))
+    } else {
+      list()
+    }
+  } else {
+    normalize_slopes(random_in$slopes %||% list())
+  }
   rand_corr <- normalize_corr_matrix(random_in$corr_matrix)
   q_rand <- as.integer(isTRUE(rand_intercept)) + length(rand_slopes)
   if (is.null(rand_corr) && q_rand > 1L) {
@@ -742,6 +808,11 @@ normalize_spec_ir <- function(x) {
     out$hierarchy$n_obs <- maybe_int(out$hierarchy$n_obs)
     out$hierarchy$n_clusters <- maybe_int(out$hierarchy$n_clusters)
     out$hierarchy$cluster_size <- maybe_int(out$hierarchy$cluster_size)
+    out$hierarchy$time_points <- maybe_int(out$hierarchy$time_points)
+    if (is.list(out$hierarchy$time_spacing)) {
+      u_ts <- unlist(out$hierarchy$time_spacing, use.names = FALSE)
+      if (is.numeric(u_ts)) out$hierarchy$time_spacing <- u_ts
+    }
   }
 
   if (is.data.frame(out$predictors)) {
@@ -798,7 +869,11 @@ print.spec_ir <- function(x, ...) {
   cli::cli_text("{.strong Title:} {x$metadata$title %||% '<none>'}")
   cli::cli_text("{.strong Design:} {x$design_type %||% '?'} | {.strong Estimator:} {x$estimator$engine %||% '?'}")
 
-  if (identical(as.integer(x$hierarchy$levels %||% 1L), 2L)) {
+  if (identical(x$design_type, "longitudinal_growth")) {
+    cli::cli_text(
+      "{.strong Hierarchy:} Longitudinal ({x$hierarchy$n_clusters} {x$hierarchy$cluster_name}s x {x$hierarchy$time_points %||% x$hierarchy$cluster_size} {x$hierarchy$unit_name}s = {spec_total_n(x)} total; ICC = {x$hierarchy$icc})"
+    )
+  } else if (identical(as.integer(x$hierarchy$levels %||% 1L), 2L)) {
     cli::cli_text(
       "{.strong Hierarchy:} 2-level ({x$hierarchy$n_clusters} {x$hierarchy$cluster_name}s x {x$hierarchy$cluster_size} {x$hierarchy$unit_name}s = {spec_total_n(x)} total; ICC = {x$hierarchy$icc})"
     )
@@ -810,7 +885,12 @@ print.spec_ir <- function(x, ...) {
     beta <- x$effects$fixed[[p$name]]
     sprintf("%s [L%s, %s, beta=%s]", p$name, p$level, p$distribution, if (is.null(beta)) "?" else format(beta))
   }, character(1))
-  cli::cli_text("{.strong Outcome:} {x$outcome$name} ({x$outcome$family}, link = {x$outcome$link})")
+  ar1_txt <- if (identical(x$design_type, "longitudinal_growth") && identical(x$outcome$family, "gaussian") && !is.null(x$outcome$ar1_rho)) {
+    sprintf(", AR(1) rho = %s", format(x$outcome$ar1_rho))
+  } else {
+    ""
+  }
+  cli::cli_text("{.strong Outcome:} {x$outcome$name} ({x$outcome$family}, link = {x$outcome$link}{ar1_txt})")
   cli::cli_text("{.strong Predictors:} {paste(pred_summary, collapse = ', ')}")
 
   if (length(x$effects$random$slopes) > 0L) {

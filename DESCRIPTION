@@ -1,6 +1,6 @@
 Package: specshiny
 Title: Neuro-Symbolic Specification Engine for Dynamic 'Shiny' UIs
-Version: 0.3.0
+Version: 0.4.0
 Authors@R:
     person("Marcus", "Harris", , "marcus.harris.uconn@gmail.com", role = c("aut", "cre", "cph"))
 Description: Implements a neuro-symbolic architecture that compiles

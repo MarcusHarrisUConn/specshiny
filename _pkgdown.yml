@@ -36,6 +36,7 @@ articles:
     contents:
       - getting-started
       - multilevel-power-walkthrough
+      - longitudinal-and-templates
   - title: "Architecture, Shiny Modules & Security"
     navbar: ~
     contents:
@@ -57,6 +58,15 @@ reference:
       - spec_total_n
       - spec_implied_intercept_sd
       - spec_to_math
+  - title: "Multi-Scenario Comparison & Template Registry"
+    desc: "Compare competing study designs (DEFF, N_eff, power) and manage reusable domain templates."
+    contents:
+      - compare_specs
+      - as.data.frame.spec_comparison
+      - list_spec_templates
+      - use_spec_template
+      - register_spec_template
+      - unregister_spec_template
   - title: "Validation, Diffs & Serialization"
     desc: "Schema and statistical sanity guardrails, semantic diffs, and YAML/JSON I/O."
     contents:
