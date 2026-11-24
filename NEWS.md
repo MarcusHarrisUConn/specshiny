@@ -1,3 +1,10 @@
+# specshiny 0.5.1
+
+## Cross-Platform Windows Path & Symlink Fixes
+
+* **Portable Bundle Path Canonicalization & Symlink Detection (`R/bundle.R`)**: Fixed a Windows cross-platform bug where `validate_bundle_dir()` (`normalizePath(..., mustWork = FALSE)`) left 8.3 short paths (`RUNNER~1`) unexpanded while `is_symlink_path()` relied solely on POSIX `Sys.readlink()`. Added pure-base-R ancestor canonicalization (`canonicalize_bundle_path()`), case-insensitive Windows canonical path comparison (`same_canon_path()`), and 3-layer symlink/junction detection (POSIX `Sys.readlink()`, cross-platform parent/leaf `normalizePath(..., mustWork = TRUE)` resolution, and Windows broken-link directory entry detection) so both live/dangling file symlinks and directory symlinks/junctions are reliably rejected on macOS, Linux, and Windows while valid `tempdir()` bundles and `overwrite = TRUE` exports succeed cleanly.
+* **Cross-Platform Symlink Regression Tests (`tests/testthat/test-peer-redteam.R`)**: Isolated each symlink sub-test into its own temporary bundle directory and guarded `file.symlink()` calls cleanly with `suppressWarnings()` so restricted Windows environments skip unavailable symlink operations without spurious warnings or failures.
+
 # specshiny 0.5.0
 
 ## Independent Peer Red-Team Security Hardening (All 17 Findings Resolved)

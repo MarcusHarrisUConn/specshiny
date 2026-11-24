@@ -83,7 +83,7 @@ export_spec_bundle <- function(spec,
 
   pkg_ver <- tryCatch(
     as.character(utils::packageVersion("specshiny")),
-    error = function(e) "0.5.0"
+    error = function(e) "0.5.1"
   )
 
   manifest <- list(
@@ -249,17 +249,103 @@ print.spec_bundle_verification <- function(x, ...) {
   invisible(x)
 }
 
+same_canon_path <- function(a, b) {
+  a_clean <- sub("/+$", "", gsub("\\\\", "/", a))
+  b_clean <- sub("/+$", "", gsub("\\\\", "/", b))
+  if (identical(.Platform$OS.type, "windows")) {
+    identical(tolower(a_clean), tolower(b_clean))
+  } else {
+    identical(a_clean, b_clean)
+  }
+}
+
+is_root_path <- function(norm_path) {
+  identical(norm_path, "/") || grepl("^[A-Za-z]:/?$", norm_path)
+}
+
+trim_trailing_slash <- function(path) {
+  norm_slashes <- gsub("\\\\", "/", path)
+  if (identical(norm_slashes, "/")) {
+    "/"
+  } else if (grepl("^[A-Za-z]:/?$", norm_slashes)) {
+    paste0(substr(norm_slashes, 1L, 2L), "/")
+  } else {
+    sub("/+$", "", norm_slashes)
+  }
+}
+
 is_symlink_path <- function(path) {
   if (!is_chr_scalar(path) || !nzchar(path)) return(FALSE)
-  trimmed <- if (identical(path, "/")) "/" else sub("/+$", "", path)
+  trimmed <- trim_trailing_slash(path)
+  if (is_root_path(trimmed)) return(FALSE)
+
+  # 1. POSIX readlink (catches both live and dangling symlinks on macOS/Linux)
   lnk <- tryCatch(Sys.readlink(trimmed), error = function(e) "")
-  is.character(lnk) && length(lnk) == 1L && !is.na(lnk) && nzchar(lnk)
+  if (is.character(lnk) && length(lnk) == 1L && !is.na(lnk) && nzchar(lnk)) {
+    return(TRUE)
+  }
+
+  # 2. Cross-platform canonical resolution check (catches Windows NTFS symlinks & junctions)
+  if (file.exists(trimmed) || dir.exists(trimmed)) {
+    parent_raw <- dirname(trimmed)
+    leaf_nm <- basename(trimmed)
+    if (!identical(parent_raw, trimmed) && nzchar(leaf_nm) && !(leaf_nm %in% c(".", ".."))) {
+      canon_parent <- tryCatch(normalizePath(parent_raw, winslash = "/", mustWork = TRUE), error = function(e) "")
+      canon_actual <- tryCatch(normalizePath(trimmed, winslash = "/", mustWork = TRUE), error = function(e) "")
+      if (nzchar(canon_parent) && nzchar(canon_actual)) {
+        expected_path <- if (identical(canon_parent, "/")) {
+          paste0("/", leaf_nm)
+        } else {
+          paste0(sub("/+$", "", canon_parent), "/", leaf_nm)
+        }
+        if (!same_canon_path(canon_actual, expected_path)) {
+          return(TRUE)
+        }
+      }
+    }
+  }
+
+  # 3. Windows dangling symlink check: broken link appears in directory listing even if file.exists() is FALSE
+  if (identical(.Platform$OS.type, "windows") && !file.exists(trimmed) && !dir.exists(trimmed)) {
+    parent_raw <- dirname(trimmed)
+    leaf_nm <- basename(trimmed)
+    if (!identical(parent_raw, trimmed) && dir.exists(parent_raw) && nzchar(leaf_nm)) {
+      entries <- tryCatch(list.files(parent_raw, all.files = TRUE, no.. = TRUE), error = function(e) character())
+      if (tolower(leaf_nm) %in% tolower(entries)) {
+        return(TRUE)
+      }
+    }
+  }
+
+  FALSE
+}
+
+canonicalize_bundle_path <- function(trimmed) {
+  if (dir.exists(trimmed) || file.exists(trimmed)) {
+    return(normalizePath(trimmed, winslash = "/", mustWork = TRUE))
+  }
+  cur <- trimmed
+  suffix <- character()
+  repeat {
+    parent <- dirname(cur)
+    if (identical(parent, cur) || !nzchar(parent)) {
+      return(normalizePath(trimmed, winslash = "/", mustWork = FALSE))
+    }
+    suffix <- c(basename(cur), suffix)
+    cur <- parent
+    if (dir.exists(cur) || file.exists(cur)) {
+      canon_anc <- normalizePath(cur, winslash = "/", mustWork = TRUE)
+      anc_clean <- if (identical(canon_anc, "/")) "" else sub("/+$", "", canon_anc)
+      return(paste(c(anc_clean, suffix), collapse = "/"))
+    }
+  }
 }
 
 is_path_within_dir <- function(file_path, canon_dir) {
   canon_fp <- tryCatch(normalizePath(file_path, winslash = "/", mustWork = TRUE), error = function(e) "")
-  if (!nzchar(canon_fp)) return(FALSE)
-  identical(dirname(canon_fp), canon_dir)
+  canon_root <- tryCatch(normalizePath(canon_dir, winslash = "/", mustWork = TRUE), error = function(e) "")
+  if (!nzchar(canon_fp) || !nzchar(canon_root)) return(FALSE)
+  same_canon_path(dirname(canon_fp), canon_root)
 }
 
 assert_safe_bundle_file_target <- function(file_path, canon_dir, filename) {
@@ -290,9 +376,9 @@ validate_bundle_dir <- function(dir) {
   if (any(parts == "..")) {
     cli::cli_abort("{.arg dir} must not contain '..' path-traversal segments.", class = "specshiny_security_error")
   }
-  trimmed <- if (identical(norm_slashes, "/")) "/" else sub("/+$", "", norm_slashes)
+  trimmed <- trim_trailing_slash(norm_slashes)
   if (is_symlink_path(trimmed)) {
     cli::cli_abort("Bundle directory {.path {dir}} must not be a symbolic link.", class = "specshiny_security_error")
   }
-  normalizePath(trimmed, winslash = "/", mustWork = FALSE)
+  canonicalize_bundle_path(trimmed)
 }

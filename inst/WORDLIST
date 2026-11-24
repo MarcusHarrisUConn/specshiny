@@ -2,6 +2,7 @@ AST
 Allowlist
 Ashby
 CLI
+Canonicalization
 Codegen
 DEFF
 DGP
@@ -37,6 +38,7 @@ auditable
 bslib
 callables
 callees
+canonicalization
 chatbots
 checksums
 cleartext
@@ -62,9 +64,11 @@ reactives
 runnable
 sanitization
 sweepable
+symlink
 symlinked
 symlinks
 underspecified
+unexpanded
 untrusted
 unwhitelisted
 verifier

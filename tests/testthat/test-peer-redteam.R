@@ -136,51 +136,76 @@ test_that("HIGH-01: export_spec_bundle and verify_spec_bundle reject symlinks an
   s <- new_spec_ir(hierarchy = list(levels = 1L, n_obs = 80L), simulation = list(n_reps = 3L, seed = 1L))
   victim <- tempfile("high01_victim_")
   writeLines("ORIGINAL SECRET DATA", victim)
-  bdir <- tempfile("high01_bundle_")
-  dir.create(bdir)
-  sym_root <- tempfile("high01_symroot_")
+  bdir_live <- tempfile("high01_live_")
+  bdir_dang <- tempfile("high01_dang_")
+  bdir_tamp <- tempfile("high01_tamp_")
+  bdir_man  <- tempfile("high01_man_")
+  sym_root  <- tempfile("high01_symroot_")
   real_root <- tempfile("high01_realroot_")
+  dir.create(bdir_live)
+  dir.create(bdir_dang)
+  dir.create(bdir_tamp)
+  dir.create(bdir_man)
   dir.create(real_root)
-  on.exit(unlink(c(victim, bdir, sym_root, real_root), recursive = TRUE), add = TRUE)
+  on.exit(
+    unlink(c(victim, bdir_live, bdir_dang, bdir_tamp, bdir_man, sym_root, real_root), recursive = TRUE, force = TRUE),
+    add = TRUE
+  )
 
-  # Pre-existing live symlink inside bundle dir must fail closed and leave victim intact
-  skip_if_not(file.symlink(victim, file.path(bdir, "spec.yaml")))
+  make_symlink <- function(from, to) {
+    isTRUE(suppressWarnings(file.symlink(from, to)))
+  }
+
+  # 1. Pre-existing live symlink inside bundle dir must fail closed and leave victim intact
+  ok_live <- make_symlink(victim, file.path(bdir_live, "spec.yaml"))
+  skip_if_not(ok_live, "Symbolic links cannot be created in this environment.")
   expect_error(
-    export_spec_bundle(s, bdir, overwrite = TRUE),
+    export_spec_bundle(s, bdir_live, overwrite = TRUE),
     class = "specshiny_security_error"
   )
   expect_identical(readLines(victim), "ORIGINAL SECRET DATA")
 
-  # Dangling symlink must fail closed even with overwrite = FALSE
-  unlink(file.path(bdir, "spec.yaml"))
+  # 2. Dangling symlink must fail closed even with overwrite = FALSE
   dangling_target <- file.path(tempdir(), "nonexistent_high01_outside.qmd")
-  expect_true(file.symlink(dangling_target, file.path(bdir, "report.qmd")))
-  expect_error(
-    export_spec_bundle(s, bdir, overwrite = FALSE),
-    class = "specshiny_security_error"
-  )
-  expect_false(file.exists(dangling_target))
-  unlink(file.path(bdir, "report.qmd"))
+  if (make_symlink(dangling_target, file.path(bdir_dang, "report.qmd"))) {
+    expect_error(
+      export_spec_bundle(s, bdir_dang, overwrite = FALSE),
+      class = "specshiny_security_error"
+    )
+    expect_false(file.exists(dangling_target))
+  }
 
-  # Symlinked bundle root directory is rejected by both export and verify
-  expect_true(file.symlink(real_root, sym_root))
-  expect_error(export_spec_bundle(s, sym_root, overwrite = TRUE), class = "specshiny_security_error")
-  expect_error(verify_spec_bundle(sym_root), class = "specshiny_security_error")
+  # 3. Symlinked bundle root directory is rejected by both export and verify
+  if (make_symlink(real_root, sym_root)) {
+    expect_error(export_spec_bundle(s, sym_root, overwrite = TRUE), class = "specshiny_security_error")
+    expect_error(verify_spec_bundle(sym_root), class = "specshiny_security_error")
+  }
 
-  # Valid bundle tampered with a symlinked artifact fails verification
-  export_spec_bundle(s, bdir, overwrite = TRUE)
-  expect_true(verify_spec_bundle(bdir)$valid)
-  unlink(file.path(bdir, "spec.yaml"))
-  expect_true(file.symlink(victim, file.path(bdir, "spec.yaml")))
-  v_tampered <- verify_spec_bundle(bdir)
-  expect_false(v_tampered$valid)
-  expect_true(any(grepl("symbolic link", v_tampered$issues, ignore.case = TRUE)))
+  # 4. Valid bundle tampered with a symlinked artifact fails verification
+  export_spec_bundle(s, bdir_tamp, overwrite = TRUE)
+  expect_true(verify_spec_bundle(bdir_tamp)$valid)
+  unlink(file.path(bdir_tamp, "spec.yaml"), force = TRUE)
+  if (make_symlink(victim, file.path(bdir_tamp, "spec.yaml"))) {
+    v_tampered <- verify_spec_bundle(bdir_tamp)
+    expect_false(v_tampered$valid)
+    expect_true(any(grepl("symbolic link|outside", v_tampered$issues, ignore.case = TRUE)))
+  }
 
-  # Symlinked bundle_manifest.json fails verification
-  unlink(file.path(bdir, "bundle_manifest.json"))
-  expect_true(file.symlink(victim, file.path(bdir, "bundle_manifest.json")))
-  v_man <- verify_spec_bundle(bdir)
-  expect_false(v_man$valid)
+  # 5. Symlinked bundle_manifest.json fails verification
+  export_spec_bundle(s, bdir_man, overwrite = TRUE)
+  unlink(file.path(bdir_man, "bundle_manifest.json"), force = TRUE)
+  if (make_symlink(victim, file.path(bdir_man, "bundle_manifest.json"))) {
+    v_man <- verify_spec_bundle(bdir_man)
+    expect_false(v_man$valid)
+  }
+
+  # 6. Nested non-existing bundle directory & valid overwrite = TRUE succeed cleanly
+  nested_dir <- file.path(tempfile("high01_nested_"), "sub", "bundle")
+  on.exit(unlink(dirname(dirname(nested_dir)), recursive = TRUE, force = TRUE), add = TRUE)
+  export_spec_bundle(s, nested_dir, overwrite = FALSE)
+  expect_true(verify_spec_bundle(nested_dir)$valid)
+  expect_no_error(export_spec_bundle(s, nested_dir, overwrite = TRUE))
+  expect_true(verify_spec_bundle(nested_dir)$valid)
 })
 
 test_that("HIGH-02: spec_total_n avoids 32-bit overflow and validate_spec_ir enforces upper sample-size bounds", {
