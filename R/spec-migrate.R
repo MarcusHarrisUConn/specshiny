@@ -49,7 +49,7 @@ migrate_spec_ir <- function(spec, target_version = SPEC_SCHEMA_VERSION, validate
   if (cmp > 0L) {
     cli::cli_abort(
       c(
-        sprintf("Cannot downgrade specification from schema_version '%s' to '%s'.", from_ver, target_version),
+        "Cannot downgrade specification from schema_version {.val {from_ver}} to {.val {target_version}}.",
         "i" = "This specification was created by a newer version of specshiny; please upgrade specshiny."
       ),
       class = "specshiny_version_mismatch"
@@ -57,10 +57,10 @@ migrate_spec_ir <- function(spec, target_version = SPEC_SCHEMA_VERSION, validate
   }
 
   if (!(from_ver %in% SPEC_SUPPORTED_SCHEMA_VERSIONS)) {
+    supp_str <- paste(SPEC_SUPPORTED_SCHEMA_VERSIONS, collapse = ", ")
     cli::cli_abort(
       c(
-        sprintf("Unsupported legacy schema_version '%s' (supported: %s).",
-                from_ver, paste(SPEC_SUPPORTED_SCHEMA_VERSIONS, collapse = ", ")),
+        "Unsupported legacy schema_version {.val {from_ver}} (supported: {supp_str}).",
         "i" = "Recreate the specification with new_spec_ir() or nl_to_spec()."
       ),
       class = "specshiny_version_mismatch"

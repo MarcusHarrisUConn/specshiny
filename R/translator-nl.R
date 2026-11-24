@@ -180,7 +180,8 @@ print.spec_translation <- function(x, ...) {
   if (n_cl > 0L) {
     cli::cli_h3("Open Clarifications ({n_cl})")
     for (cl in x$clarifications) {
-      cli::cli_bullets(c("i" = sprintf("[%s] %s (default: %s)", cl$id, cl$question, format_diff_val(cl$current_default))))
+      cl_line <- sprintf("[%s] %s (default: %s)", cl$id, cl$question, format_diff_val(cl$current_default))
+      cli::cli_bullets(c("i" = "{cl_line}"))
     }
   } else {
     cli::cli_alert_success("No open clarifications required.")
@@ -983,8 +984,10 @@ refine_spec_backend.spec_translator_rule <- function(translator, spec, instructi
     mark("hierarchy.levels")
   } else if (grepl("\\b(switch\\s+to\\s+1[- ]?level|make\\s+(?:it\\s+)?single[- ]?level|remove\\s+clustering)\\b", low, perl = TRUE) &&
              identical(as.integer(s$hierarchy$levels), 2L)) {
+    prev_n <- suppressWarnings(as.numeric(spec_total_n(s)))
+    if (!is.finite(prev_n) || prev_n < 50) prev_n <- 200
     s$hierarchy$levels <- 1L
-    s$hierarchy$n_obs <- max(50L, as.integer(spec_total_n(s)))
+    s$hierarchy$n_obs <- as.integer(min(prev_n, 1e7))
     s$hierarchy$n_clusters <- NULL
     s$hierarchy$cluster_size <- NULL
     s$hierarchy$cluster_size_dist <- NULL
@@ -1094,7 +1097,9 @@ refine_spec_backend.spec_translator_rule <- function(translator, spec, instructi
     s$outcome$error_dist <- NULL
     s$outcome$error_df <- NULL
     s$outcome$error_skew <- NULL
+    s$outcome$ar1_rho <- NULL
     s$simulation$parameter_grid$residual_sd <- NULL
+    s$simulation$parameter_grid$ar1_rho <- NULL
     q_r <- as.integer(isTRUE(s$effects$random$intercept)) + length(s$effects$random$slopes)
     s$estimator$engine <- infer_default_engine(as.integer(s$hierarchy$levels), "binomial", q_r)
     mark("outcome.family")
@@ -1105,7 +1110,9 @@ refine_spec_backend.spec_translator_rule <- function(translator, spec, instructi
     s$outcome$error_dist <- NULL
     s$outcome$error_df <- NULL
     s$outcome$error_skew <- NULL
+    s$outcome$ar1_rho <- NULL
     s$simulation$parameter_grid$residual_sd <- NULL
+    s$simulation$parameter_grid$ar1_rho <- NULL
     q_r <- as.integer(isTRUE(s$effects$random$intercept)) + length(s$effects$random$slopes)
     s$estimator$engine <- infer_default_engine(as.integer(s$hierarchy$levels), "poisson", q_r)
     mark("outcome.family")
@@ -1114,6 +1121,9 @@ refine_spec_backend.spec_translator_rule <- function(translator, spec, instructi
     s$outcome$link <- "identity"
     if (is.null(s$outcome$residual_sd)) s$outcome$residual_sd <- 1.0
     if (is.null(s$outcome$error_dist)) s$outcome$error_dist <- "normal"
+    if (identical(s$design_type, "longitudinal_growth") && is.null(s$outcome$ar1_rho)) {
+      s$outcome$ar1_rho <- 0.30
+    }
     q_r <- as.integer(isTRUE(s$effects$random$intercept)) + length(s$effects$random$slopes)
     s$estimator$engine <- infer_default_engine(as.integer(s$hierarchy$levels), "gaussian", q_r)
     mark("outcome.family")

@@ -20,23 +20,34 @@ SPEC_AST_BANNED_SYMBOLS <- c(
   "system", "system2", "shell", "shell.exec", "pipe", "do.call", "match.fun",
   "source", "sys.source", "unlink", "file.remove", "file.create", "file.copy",
   "file.rename", "file.append", "dir.create", "writeLines", "writeChar",
-  "writeBin", "write.table", "write.csv", "cat", "sink", "save", "saveRDS",
-  "readRDS", "load", "readLines", "scan", "file", "gzfile", "bzfile", "xzfile",
+  "writeBin", "write.table", "write.csv", "cat", "sink", "save", "save.image",
+  "saveRDS", "readRDS", "load", "readLines", "read.table", "read.csv",
+  "read.delim", "scan", "file", "gzfile", "bzfile", "xzfile",
   "url", "download.file", "socketConnection", "fifo", "get", "mget", "get0",
-  "dynGet", "assign", "rm", "remove", "attach", "detach", "dyn.load",
-  "dyn.unload", "Sys.setenv", "Sys.unsetenv", "Sys.chmod", "Sys.umask",
+  "dynGet", "getFromNamespace", "getExportedValue", "assign", "rm", "remove",
+  "attach", "detach", "dyn.load", "dyn.unload", "Sys.getenv", "Sys.setenv",
+  "Sys.unsetenv", "Sys.chmod", "Sys.umask", "Sys.which", "Sys.glob",
   "options", "trace", "untrace", "debug", "debugonce", "unlockBinding",
   "lockBinding", "assignInNamespace", "fixInNamespace", "q", "quit",
-  "Recall", "baseenv", "globalenv", "environment", "new.env", "parent.env",
-  "setHook", "reg.finalizer", "on.exit", "browser"
+  "Recall", "baseenv", "globalenv", ".GlobalEnv", "environment", "new.env", "parent.env",
+  "parent.frame", "sys.frame", "sys.call", "match.call", "setHook",
+  "reg.finalizer", "browser", "install.packages", "loadNamespace",
+  "attachNamespace", "asNamespace", "getNamespace", ".Call", ".External",
+  ".External2", ".Internal", ".Primitive", ".C", ".Fortran"
+)
+
+# Safe bare non-call value symbols permitted without local assignment
+SPEC_AST_ALLOWED_VALUE_SYMBOLS <- c(
+  "T", "F", "TRUE", "FALSE", "NA", "NA_real_", "NA_integer_",
+  "NA_character_", "NA_complex_", "Inf", "NaN", "NULL", "pi", ".Random.seed"
 )
 
 # Strict positive allowlist of bare base/control calls emitted by compile_r_script()
 SPEC_AST_ALLOWED_BARE_CALLS <- c(
   # Language & control flow
-  "{", "(", "<-", "=", "if", "for", "function", "return", "~", "::",
-  # Indexing & extraction
-  "$", "[", "[[", ":",
+  "{", "(", "<-", "=", "if", "for", "function", "return", "~", "::", "on.exit",
+  # Indexing & extraction (@ is further restricted to @optinfo only)
+  "$", "@", "[", "[[", ":",
   # Arithmetic, comparison, logical & matrix operators
   "+", "-", "*", "/", "^", "%%", "%/%", "%*%",
   "==", "!=", "<", "<=", ">", ">=", "&", "&&", "|", "||", "!",
@@ -233,7 +244,8 @@ sanitize_secret_error <- function(msg, secret = NULL) {
   msg
 }
 
-# Strict URL validator for LLM backends (blocks file://, gopher://, CRLF, non-local HTTP)
+# Strict URL validator for LLM backends (blocks file://, gopher://, CRLF,
+# non-local HTTP, invalid TCP ports, and cloud metadata / link-local SSRF targets)
 validate_backend_url <- function(url, allow_http_local = FALSE) {
   if (!is_chr_scalar(url) || !nzchar(trimws(url))) {
     cli::cli_abort("{.arg base_url} must be a non-empty URL string.", class = "specshiny_security_error")
@@ -246,27 +258,119 @@ validate_backend_url <- function(url, allow_http_local = FALSE) {
     cli::cli_abort("{.arg base_url} must not embed credentials ({.code user:pass@}).", class = "specshiny_security_error")
   }
 
-  is_https <- grepl("^https://[A-Za-z0-9._-]+(:[0-9]{1,5})?(/[A-Za-z0-9._~/%-]*)?$", url, perl = TRUE)
+  is_https <- grepl("^https://(\\[[0-9A-Fa-f:.]+\\]|[A-Za-z0-9._-]+)(:[0-9]{1,5})?(/[A-Za-z0-9._~/%-]*)?$", url, perl = TRUE)
   is_http_local <- grepl(
     "^http://(localhost|127\\.0\\.0\\.1|\\[::1\\])(:[0-9]{1,5})?(/[A-Za-z0-9._~/%-]*)?$",
     url, ignore.case = TRUE, perl = TRUE
   )
 
-  if (is_https || (isTRUE(allow_http_local) && is_http_local)) {
-    return(url)
+  if (!(is_https || (isTRUE(allow_http_local) && is_http_local))) {
+    if (isTRUE(allow_http_local)) {
+      cli::cli_abort(
+        "{.arg base_url} must use {.code https://} or local {.code http://localhost} / {.code http://127.0.0.1}.",
+        class = "specshiny_security_error"
+      )
+    } else {
+      cli::cli_abort(
+        "{.arg base_url} must use {.code https://} (got {.val {url}}).",
+        class = "specshiny_security_error"
+      )
+    }
   }
 
-  if (isTRUE(allow_http_local)) {
-    cli::cli_abort(
-      "{.arg base_url} must use {.code https://} or local {.code http://localhost} / {.code http://127.0.0.1}.",
-      class = "specshiny_security_error"
-    )
+  # Extract authority (host + optional :port)
+  authority <- sub("^https?://([^/]+).*$", "\\1", url, ignore.case = TRUE, perl = TRUE)
+  host <- authority
+  port_str <- ""
+  if (startsWith(authority, "[")) {
+    m_v6 <- regexec("^\\[([^\\]]+)\\](?::([0-9]+))?$", authority, perl = TRUE)
+    reg_v6 <- regmatches(authority, m_v6)[[1L]]
+    if (length(reg_v6) < 2L) {
+      cli::cli_abort("Malformed IPv6 authority in {.arg base_url}.", class = "specshiny_security_error")
+    }
+    host <- tolower(reg_v6[[2L]])
+    if (length(reg_v6) >= 3L) port_str <- reg_v6[[3L]]
+  } else if (grepl(":", authority, fixed = TRUE)) {
+    parts_ap <- strsplit(authority, ":", fixed = TRUE)[[1L]]
+    if (length(parts_ap) != 2L) {
+      cli::cli_abort("Malformed host:port in {.arg base_url}.", class = "specshiny_security_error")
+    }
+    host <- tolower(parts_ap[[1L]])
+    port_str <- parts_ap[[2L]]
   } else {
+    host <- tolower(authority)
+  }
+
+  if (nzchar(port_str)) {
+    port_val <- suppressWarnings(as.integer(port_str))
+    if (is.na(port_val) || port_val < 1L || port_val > 65535L) {
+      cli::cli_abort(
+        "{.arg base_url} specifies an invalid TCP port ({.val {port_str}}); must be in 1..65535.",
+        class = "specshiny_security_error"
+      )
+    }
+  }
+
+  # Reject cloud metadata endpoints, link-local ranges, unspecified addresses, and numeric IP obfuscations
+  is_blocked_host <- grepl("^169\\.254\\.", host, perl = TRUE) ||
+    grepl("^0\\.", host, perl = TRUE) ||
+    grepl("^(fe80:|fd00:ec2:|::ffff:169\\.254\\.|::$)", host, perl = TRUE) ||
+    host %in% c("metadata", "metadata.google.internal", "metadata.goog", "instance-data") ||
+    grepl("^[0-9]+$", host, perl = TRUE) ||
+    grepl("^0x[0-9a-f]+", host, perl = TRUE) ||
+    grepl("^0[0-7]+\\.", host, perl = TRUE)
+
+  if (is_blocked_host) {
     cli::cli_abort(
-      "{.arg base_url} must use {.code https://} (got {.val {url}}).",
+      "{.arg base_url} targets a restricted link-local, metadata, or obfuscated host ({.val {host}}).",
       class = "specshiny_security_error"
     )
   }
+
+  url
+}
+
+validate_backend_model <- function(model) {
+  if (!is_chr_scalar(model) || !nzchar(trimws(model))) {
+    cli::cli_abort("{.arg model} must be a non-empty character scalar.", class = "specshiny_security_error")
+  }
+  if (!is_pure_ascii(model) || grepl("[[:cntrl:]]", model)) {
+    cli::cli_abort("{.arg model} must be pure ASCII without control characters.", class = "specshiny_security_error")
+  }
+  cleaned <- trimws(model)
+  if (grepl("[[:space:]]", cleaned) || nchar(cleaned, type = "bytes") > 256L) {
+    cli::cli_abort("{.arg model} must not contain whitespace or exceed 256 characters.", class = "specshiny_security_error")
+  }
+  cleaned
+}
+
+validate_backend_api_key <- function(api_key) {
+  if (is.null(api_key)) {
+    return("")
+  }
+  if (!is.character(api_key) || length(api_key) != 1L || is.na(api_key)) {
+    cli::cli_abort("{.arg api_key} must be a character scalar.", class = "specshiny_security_error")
+  }
+  if (!nzchar(api_key)) {
+    return("")
+  }
+  if (!is_pure_ascii(api_key) || grepl("[[:cntrl:][:space:]]", api_key)) {
+    cli::cli_abort(
+      "{.arg api_key} must be pure ASCII without whitespace or control characters.",
+      class = "specshiny_security_error"
+    )
+  }
+  api_key
+}
+
+validate_backend_temperature <- function(temperature) {
+  if (!is_num_scalar(temperature) || temperature < 0 || temperature > 2) {
+    cli::cli_abort(
+      "{.arg temperature} must be a finite numeric scalar in [0, 2].",
+      class = "specshiny_security_error"
+    )
+  }
+  as.numeric(temperature)
 }
 
 validate_backend_timeout <- function(timeout) {
@@ -283,15 +387,54 @@ validate_max_response_bytes <- function(max_bytes) {
   as.integer(max_bytes)
 }
 
+is_system_function_symbol <- function(sym) {
+  if (!is_chr_scalar(sym) || !nzchar(sym)) return(FALSE)
+  envs <- list(baseenv(), globalenv())
+  for (pkg in c("utils", "stats", "tools", "methods", "graphics", "grDevices")) {
+    ns <- tryCatch(asNamespace(pkg), error = function(e) NULL)
+    if (!is.null(ns)) envs[[length(envs) + 1L]] <- ns
+  }
+  for (env in envs) {
+    if (exists(sym, envir = env, inherits = FALSE)) {
+      obj <- tryCatch(get(sym, envir = env, inherits = FALSE), error = function(e) NULL)
+      if (is.function(obj)) return(TRUE)
+    }
+  }
+  FALSE
+}
+
+is_narrow_rng_exists <- function(node) {
+  if (!is.call(node) || length(node) != 4L) return(FALSE)
+  arg_nms <- names(node)
+  if (is.null(arg_nms)) arg_nms <- rep("", length(node))
+  # Expect: exists(".Random.seed", envir = .GlobalEnv, inherits = FALSE)
+  arg1 <- node[[2L]]
+  if (!(is.character(arg1) && length(arg1) == 1L && identical(arg1, ".Random.seed"))) return(FALSE)
+  env_idx <- which(arg_nms == "envir")
+  inh_idx <- which(arg_nms == "inherits")
+  if (length(env_idx) != 1L || length(inh_idx) != 1L) return(FALSE)
+  env_arg <- node[[env_idx]]
+  inh_arg <- node[[inh_idx]]
+  is.symbol(env_arg) && identical(as.character(env_arg), ".GlobalEnv") && identical(inh_arg, FALSE)
+}
+
+is_narrow_rng_seed_access <- function(node) {
+  is.call(node) && length(node) == 3L &&
+    is.symbol(node[[1L]]) && identical(as.character(node[[1L]]), "$") &&
+    is.symbol(node[[2L]]) && identical(as.character(node[[2L]]), ".GlobalEnv") &&
+    is.symbol(node[[3L]]) && identical(as.character(node[[3L]]), ".Random.seed")
+}
+
 #' Statically verify the AST safety of a compiled R script
 #'
 #' Parses an R script into an Abstract Syntax Tree (AST) without evaluating any
 #' code and verifies that **every** function call belongs strictly to a closed
-#' allowlist of safe statistical/base functions (or functions defined within the
-#' script itself). Rejects all `:::`, dynamic/computed callees, arbitrary
-#' package loading, and dangerous primitives (`eval`, `parse`, `system`,
-#' `system2`, `do.call`, `source`, `unlink`, `file.remove`, `get`, `assign`,
-#' etc.)—even when passed as higher-order function arguments (e.g., to `lapply`).
+#' allowlist of safe statistical/base functions (or non-shadowing local
+#' functions defined earlier in lexical order). Rejects all `:::`, `<<-`,
+#' dynamic/computed callees, arbitrary S4 slots, arbitrary package loading,
+#' extra-argument injections in `library()` / `requireNamespace()`, and
+#' dangerous or unwhitelisted primitives—even when passed as higher-order
+#' function arguments (e.g., to `lapply`, `vapply`, or `tryCatch`).
 #'
 #' @param script Character scalar (or vector of lines) containing R source code.
 #' @param strict Logical; if `TRUE`, aborts with a `specshiny_ast_violation`
@@ -318,7 +461,6 @@ verify_compiled_r_ast <- function(script, strict = FALSE) {
 
   violations <- list()
   called <- character()
-  local_funs <- character()
 
   add_viol <- function(code, symbol, message) {
     violations[[length(violations) + 1L]] <<- list(
@@ -326,6 +468,17 @@ verify_compiled_r_ast <- function(script, strict = FALSE) {
       symbol = as.character(symbol),
       message = as.character(message)
     )
+  }
+
+  make_scope <- function(vars = character(), funs = character()) {
+    sc <- new.env(parent = emptyenv())
+    sc$vars <- vars
+    sc$funs <- funs
+    sc
+  }
+
+  clone_scope <- function(sc) {
+    make_scope(vars = sc$vars, funs = sc$funs)
   }
 
   build_out <- function(n_expr = 0L) {
@@ -370,34 +523,111 @@ verify_compiled_r_ast <- function(script, strict = FALSE) {
     return(build_out(0L))
   }
 
-  # First pass: discover top-level local function definitions (`fn <- function(...) ...`)
-  for (i in seq_along(exprs)) {
-    e <- exprs[[i]]
-    if (is.call(e) && length(e) == 3L &&
-        is.symbol(e[[1L]]) && as.character(e[[1L]]) %in% c("<-", "=") &&
-        is.symbol(e[[2L]]) &&
-        is.call(e[[3L]]) && is.symbol(e[[3L]][[1L]]) && identical(as.character(e[[3L]][[1L]]), "function")) {
-      fn_nm <- as.character(e[[2L]])
-      if (fn_nm %in% SPEC_AST_BANNED_SYMBOLS) {
-        add_viol("banned_definition", fn_nm, sprintf("Redefining banned symbol '%s' is forbidden.", fn_nm))
-      } else {
-        local_funs <- unique(c(local_funs, fn_nm))
-      }
+  # Strict positive allowlist check on higher-order callable arguments
+  check_higher_order_callable <- function(arg_node, host_fn, scope) {
+    if (is.null(arg_node) || identical(arg_node, quote(expr = ))) {
+      add_viol("unwhitelisted_higher_order_fn", "<missing>",
+               sprintf("Missing callable argument to higher-order function '%s'.", host_fn))
+      return(invisible(NULL))
     }
+    # 1. Inline function(...) definition (body walked separately)
+    if (is.call(arg_node) && is.symbol(arg_node[[1L]]) && identical(as.character(arg_node[[1L]]), "function")) {
+      return(invisible(NULL))
+    }
+    # 2. Allowlisted pkg::fn reference
+    if (is.call(arg_node) && length(arg_node) == 3L &&
+        is.symbol(arg_node[[1L]]) && identical(as.character(arg_node[[1L]]), "::")) {
+      pkg <- as.character(arg_node[[2L]])
+      fn <- as.character(arg_node[[3L]])
+      allowed_fns <- SPEC_AST_ALLOWED_NS_CALLS[[pkg]]
+      if (!(fn %in% SPEC_AST_BANNED_SYMBOLS) && !is.null(allowed_fns) && (fn %in% allowed_fns)) {
+        return(invisible(NULL))
+      }
+      add_viol("unwhitelisted_higher_order_fn", paste0(pkg, "::", fn),
+               sprintf("Higher-order callable '%s::%s' passed to '%s' is not in the static AST allowlist.", pkg, fn, host_fn))
+      return(invisible(NULL))
+    }
+    # 3. Bare symbol strictly in allowlist or previously defined local_funs
+    if (is.symbol(arg_node)) {
+      sym <- as.character(arg_node)
+      if (!(sym %in% SPEC_AST_BANNED_SYMBOLS) &&
+          (sym %in% SPEC_AST_ALLOWED_BARE_CALLS || sym %in% scope$funs)) {
+        return(invisible(NULL))
+      }
+      add_viol("unwhitelisted_higher_order_fn", sym,
+               sprintf("Higher-order callable symbol '%s' passed to '%s' is not in the static AST allowlist.", sym, host_fn))
+      return(invisible(NULL))
+    }
+    # 4. Anything else (strings like "system", arbitrary expressions, etc.) is forbidden
+    arg_str <- deparse1(arg_node)
+    add_viol("unwhitelisted_higher_order_fn", arg_str,
+             sprintf("Non-allowlisted higher-order callable '%s' passed to '%s' is forbidden.", arg_str, host_fn))
+    invisible(NULL)
   }
 
-  # Recursive AST walker
-  walk_node <- function(node) {
+  inspect_higher_order_args <- function(node, full_fn, scope) {
+    if (length(node) < 2L) return(invisible(NULL))
+    arg_nms <- names(node)
+    if (is.null(arg_nms)) arg_nms <- rep("", length(node))
+
+    if (full_fn %in% c("lapply", "base::lapply", "vapply", "base::vapply")) {
+      fun_pos <- which(nzchar(arg_nms) & startsWith("FUN", arg_nms))
+      if (length(fun_pos) >= 1L) {
+        check_higher_order_callable(node[[fun_pos[[1L]]]], full_fn, scope)
+      } else {
+        has_x_named <- any(arg_nms == "X")
+        unnamed <- which(arg_nms[-1L] == "") + 1L
+        need_pos <- if (has_x_named) 1L else 2L
+        if (length(unnamed) >= need_pos) {
+          check_higher_order_callable(node[[unnamed[[need_pos]]]], full_fn, scope)
+        }
+      }
+    } else if (identical(full_fn, "stats::ave")) {
+      fun_pos <- which(nzchar(arg_nms) & startsWith("FUN", arg_nms))
+      if (length(fun_pos) >= 1L) {
+        check_higher_order_callable(node[[fun_pos[[1L]]]], full_fn, scope)
+      }
+    } else if (identical(full_fn, "stats::uniroot")) {
+      f_pos <- which(arg_nms == "f")
+      if (length(f_pos) >= 1L) {
+        check_higher_order_callable(node[[f_pos[[1L]]]], full_fn, scope)
+      } else {
+        unnamed <- which(arg_nms[-1L] == "") + 1L
+        if (length(unnamed) >= 1L) {
+          check_higher_order_callable(node[[unnamed[[1L]]]], full_fn, scope)
+        }
+      }
+    } else if (full_fn %in% c("tryCatch", "base::tryCatch")) {
+      expr_pos <- which(nzchar(arg_nms) & startsWith("expr", arg_nms))
+      first_pos <- if (length(expr_pos) >= 1L) expr_pos[[1L]] else 2L
+      for (k in 2L:length(node)) {
+        nm_k <- arg_nms[[k]]
+        if (k == first_pos || (nzchar(nm_k) && startsWith("finally", nm_k))) next
+        check_higher_order_callable(node[[k]], full_fn, scope)
+      }
+    }
+    invisible(NULL)
+  }
+
+  # Recursive lexical-scope AST walker
+  walk_node <- function(node, scope, in_formula = FALSE) {
     if (is.null(node) || is.atomic(node)) {
       return(invisible(NULL))
     }
 
     if (is.symbol(node)) {
       sym <- as.character(node)
-      # Catch higher-order references to banned functions (e.g., lapply(x, system))
       if (sym %in% SPEC_AST_BANNED_SYMBOLS) {
         add_viol("banned_symbol_reference", sym,
                  sprintf("Reference to banned symbol '%s' is forbidden.", sym))
+      } else if (!isTRUE(in_formula) &&
+                 !(sym %in% scope$vars) &&
+                 !(sym %in% scope$funs) &&
+                 !(sym %in% SPEC_AST_ALLOWED_BARE_CALLS) &&
+                 !(sym %in% SPEC_AST_ALLOWED_VALUE_SYMBOLS) &&
+                 is_system_function_symbol(sym)) {
+        add_viol("unwhitelisted_function_symbol", sym,
+                 sprintf("Reference to unwhitelisted function symbol '%s' is forbidden.", sym))
       }
       return(invisible(NULL))
     }
@@ -405,7 +635,7 @@ verify_compiled_r_ast <- function(script, strict = FALSE) {
     if (is.pairlist(node)) {
       for (k in seq_along(node)) {
         if (!identical(node[[k]], quote(expr = ))) {
-          walk_node(node[[k]])
+          walk_node(node[[k]], scope, in_formula = in_formula)
         }
       }
       return(invisible(NULL))
@@ -440,6 +670,8 @@ verify_compiled_r_ast <- function(script, strict = FALSE) {
           } else if (is.null(allowed_fns) || !(fn %in% allowed_fns)) {
             add_viol("unwhitelisted_call", full_nm,
                      sprintf("Namespace call '%s' is not in the static AST allowlist.", full_nm))
+          } else {
+            inspect_higher_order_args(node, full_nm, scope)
           }
         } else {
           # Computed callee such as (get("system"))() or funs[[1]]()
@@ -447,14 +679,31 @@ verify_compiled_r_ast <- function(script, strict = FALSE) {
           called <<- c(called, callee_str)
           add_viol("dynamic_callee", callee_str,
                    sprintf("Dynamic/computed callee '%s' is forbidden.", callee_str))
-          walk_node(head)
+          walk_node(head, scope, in_formula = in_formula)
         }
       } else if (is.symbol(head)) {
         fn_nm <- as.character(head)
         called <<- c(called, fn_nm)
 
+        # Narrow RNG restoration primitive:
+        # exists(".Random.seed", envir = .GlobalEnv, inherits = FALSE)
+        if (identical(fn_nm, "exists")) {
+          if (is_narrow_rng_exists(node)) {
+            return(invisible(NULL))
+          }
+          add_viol("unwhitelisted_call", "exists",
+                   "Call to 'exists' is only allowed for checking '.Random.seed' in .GlobalEnv.")
+          # Still walk arguments to catch any nested attacks
+          if (length(node) >= 2L) {
+            for (k in 2L:length(node)) {
+              if (!identical(node[[k]], quote(expr = ))) walk_node(node[[k]], scope, in_formula = in_formula)
+            }
+          }
+          return(invisible(NULL))
+        }
+
         if (identical(fn_nm, "::")) {
-          # Bare pkg::sym value reference (e.g., stats::rnorm passed to something)
+          # Bare pkg::sym value reference
           pkg <- as.character(node[[2L]])
           fn <- as.character(node[[3L]])
           full_nm <- paste0(pkg, "::", fn)
@@ -466,16 +715,56 @@ verify_compiled_r_ast <- function(script, strict = FALSE) {
           return(invisible(NULL))
         }
 
-        if (fn_nm %in% SPEC_AST_BANNED_SYMBOLS) {
-          add_viol("banned_call", fn_nm, sprintf("Call to banned function '%s' is forbidden.", fn_nm))
-        } else if (!(fn_nm %in% SPEC_AST_ALLOWED_BARE_CALLS) && !(fn_nm %in% local_funs)) {
-          add_viol("unwhitelisted_call", fn_nm,
-                   sprintf("Function call '%s' is not in the static AST allowlist.", fn_nm))
+        # Sequential lexical assignment: evaluate RHS BEFORE registering LHS (no hoisting)
+        if (fn_nm %in% c("<-", "=") && length(node) == 3L) {
+          lhs <- node[[2L]]
+          rhs <- node[[3L]]
+          walk_node(rhs, scope, in_formula = FALSE)
+          if (is.symbol(lhs)) {
+            lhs_nm <- as.character(lhs)
+            is_fn_def <- is.call(rhs) && is.symbol(rhs[[1L]]) && identical(as.character(rhs[[1L]]), "function")
+            if (lhs_nm %in% SPEC_AST_BANNED_SYMBOLS) {
+              add_viol("banned_definition", lhs_nm, sprintf("Redefining banned symbol '%s' is forbidden.", lhs_nm))
+            } else if (is_fn_def) {
+              if (!(lhs_nm %in% SPEC_AST_ALLOWED_BARE_CALLS) && is_system_function_symbol(lhs_nm)) {
+                add_viol("banned_definition", lhs_nm, sprintf("Shadowing system function '%s' is forbidden.", lhs_nm))
+              } else {
+                scope$funs <- unique(c(scope$funs, lhs_nm))
+                scope$vars <- unique(c(scope$vars, lhs_nm))
+              }
+            } else {
+              scope$vars <- unique(c(scope$vars, lhs_nm))
+            }
+          } else {
+            walk_node(lhs, scope, in_formula = FALSE)
+          }
+          return(invisible(NULL))
         }
 
-        # Special guard on library() and requireNamespace(): allow ONLY whitelisted packages
+        # Check bare call allowlist against current lexical scope$funs
+        if (fn_nm %in% SPEC_AST_BANNED_SYMBOLS) {
+          add_viol("banned_call", fn_nm, sprintf("Call to banned function '%s' is forbidden.", fn_nm))
+        } else if (!(fn_nm %in% SPEC_AST_ALLOWED_BARE_CALLS) && !(fn_nm %in% scope$funs)) {
+          add_viol("unwhitelisted_call", fn_nm,
+                   sprintf("Function call '%s' is not in the static AST allowlist.", fn_nm))
+        } else {
+          inspect_higher_order_args(node, fn_nm, scope)
+        }
+
+        # Special guard on library() and requireNamespace():
+        # Validate package name AND recursively walk EVERY extra argument!
         if (fn_nm %in% c("library", "requireNamespace")) {
-          pkg_arg <- if (length(node) >= 2L) node[[2L]] else NULL
+          arg_nms <- names(node)
+          if (is.null(arg_nms)) arg_nms <- rep("", length(node))
+          pkg_pos <- which(nzchar(arg_nms) & startsWith("package", arg_nms))
+          pkg_idx <- if (length(pkg_pos) >= 1L) {
+            pkg_pos[[1L]]
+          } else {
+            unnamed <- which(arg_nms[-1L] == "") + 1L
+            if (length(unnamed) >= 1L) unnamed[[1L]] else NA_integer_
+          }
+          pkg_arg <- if (!is.na(pkg_idx)) node[[pkg_idx]] else NULL
+          is_lit_pkg <- is.symbol(pkg_arg) || (is.character(pkg_arg) && length(pkg_arg) == 1L)
           pkg_name <- if (is.symbol(pkg_arg)) {
             as.character(pkg_arg)
           } else if (is.character(pkg_arg) && length(pkg_arg) == 1L) {
@@ -487,19 +776,92 @@ verify_compiled_r_ast <- function(script, strict = FALSE) {
             add_viol("unwhitelisted_package", pkg_name,
                      sprintf("Loading package '%s' is not allowed in compiled scripts.", pkg_name))
           }
+          if (length(node) >= 2L) {
+            for (k in 2L:length(node)) {
+              if (identical(k, pkg_idx) && is_lit_pkg) next
+              if (!identical(node[[k]], quote(expr = ))) {
+                walk_node(node[[k]], scope, in_formula = in_formula)
+              }
+            }
+          }
           return(invisible(NULL))
         }
 
-        # For function(args) body: walk default arg values and body cleanly
+        # For function(args) body: walk default arg values in current scope,
+        # bind formals in child scope, and walk body in child scope
         if (identical(fn_nm, "function")) {
-          if (length(node) >= 2L) walk_node(node[[2L]])
-          if (length(node) >= 3L) walk_node(node[[3L]])
+          child_scope <- clone_scope(scope)
+          if (length(node) >= 2L && is.pairlist(node[[2L]])) {
+            walk_node(node[[2L]], scope, in_formula = FALSE)
+            f_nms <- names(node[[2L]])
+            if (!is.null(f_nms)) {
+              for (fnm in f_nms) {
+                if (fnm %in% SPEC_AST_BANNED_SYMBOLS) {
+                  add_viol("banned_definition", fnm, sprintf("Using banned symbol '%s' as parameter name is forbidden.", fnm))
+                } else if (nzchar(fnm)) {
+                  child_scope$vars <- unique(c(child_scope$vars, fnm))
+                }
+              }
+            }
+          }
+          if (length(node) >= 3L) {
+            walk_node(node[[3L]], child_scope, in_formula = FALSE)
+          }
           return(invisible(NULL))
         }
 
-        # For $ access (dat$col): walk only LHS, never treat RHS column name as symbol ref
+        # For for (var in seq) body: walk seq, bind loop var, walk body
+        if (identical(fn_nm, "for") && length(node) == 4L) {
+          walk_node(node[[3L]], scope, in_formula = FALSE)
+          if (is.symbol(node[[2L]])) {
+            v_nm <- as.character(node[[2L]])
+            if (v_nm %in% SPEC_AST_BANNED_SYMBOLS) {
+              add_viol("banned_definition", v_nm, sprintf("Using banned symbol '%s' as loop variable is forbidden.", v_nm))
+            } else {
+              scope$vars <- unique(c(scope$vars, v_nm))
+            }
+          }
+          walk_node(node[[4L]], scope, in_formula = FALSE)
+          return(invisible(NULL))
+        }
+
+        # For ~ formulas: walk all calls strictly, allow non-banned column symbols
+        if (identical(fn_nm, "~")) {
+          if (length(node) >= 2L) {
+            for (k in 2L:length(node)) {
+              if (!identical(node[[k]], quote(expr = ))) {
+                walk_node(node[[k]], scope, in_formula = TRUE)
+              }
+            }
+          }
+          return(invisible(NULL))
+        }
+
+        # For $ access (dat$col): permit narrow .GlobalEnv$.Random.seed;
+        # otherwise walk only LHS, never treat RHS column name as symbol ref
         if (identical(fn_nm, "$")) {
-          if (length(node) >= 2L) walk_node(node[[2L]])
+          if (is_narrow_rng_seed_access(node)) {
+            return(invisible(NULL))
+          }
+          if (length(node) >= 2L) walk_node(node[[2L]], scope, in_formula = in_formula)
+          return(invisible(NULL))
+        }
+
+        # For @ slot access: allow ONLY @optinfo (for lme4 convergence check), walk LHS
+        if (identical(fn_nm, "@")) {
+          slot_arg <- if (length(node) >= 3L) node[[3L]] else NULL
+          slot_nm <- if (is.symbol(slot_arg)) {
+            as.character(slot_arg)
+          } else if (is.character(slot_arg) && length(slot_arg) == 1L) {
+            slot_arg
+          } else {
+            "<dynamic>"
+          }
+          if (!identical(slot_nm, "optinfo")) {
+            add_viol("unwhitelisted_slot", slot_nm,
+                     sprintf("S4 slot access '@%s' is not in the static AST allowlist.", slot_nm))
+          }
+          if (length(node) >= 2L) walk_node(node[[2L]], scope, in_formula = in_formula)
           return(invisible(NULL))
         }
       } else {
@@ -513,7 +875,7 @@ verify_compiled_r_ast <- function(script, strict = FALSE) {
       if (length(node) >= 2L) {
         for (k in 2L:length(node)) {
           if (!identical(node[[k]], quote(expr = ))) {
-            walk_node(node[[k]])
+            walk_node(node[[k]], scope, in_formula = in_formula)
           }
         }
       }
@@ -522,13 +884,14 @@ verify_compiled_r_ast <- function(script, strict = FALSE) {
 
     if (is.expression(node) || is.list(node)) {
       for (k in seq_along(node)) {
-        walk_node(node[[k]])
+        walk_node(node[[k]], scope, in_formula = in_formula)
       }
     }
   }
 
+  top_scope <- make_scope()
   for (i in seq_along(exprs)) {
-    walk_node(exprs[[i]])
+    walk_node(exprs[[i]], top_scope, in_formula = FALSE)
   }
 
   build_out(length(exprs))

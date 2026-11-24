@@ -332,13 +332,23 @@ test_that("compare_specs computes exact DEFF, N_eff, variance decomposition, dif
   expect_equal(nrow(df), 5L)
   expect_equal(df$scenario, c("ols", "balanced", "normal_unbal", "pois_unbal", "growth"))
 
-  # Verify exact Kish / Eldridge-Ashby-Kerry formulas
+  # Verify exact Kish / Eldridge-Ashby-Kerry formulas (accounting for left-censoring at min_nj = 2)
   expect_equal(df$deff[[1L]], 1.0)
   expect_equal(df$n_eff[[1L]], 400.0)
   expect_equal(df$deff[[2L]], 1 + (10 - 1) * 0.2)
   expect_equal(df$n_eff[[2L]], round(400 / 2.8, 2))
-  expect_equal(df$deff[[3L]], round(1 + (10 * (1 + 0.4^2) - 1) * 0.2, 4))
-  expect_equal(df$deff[[4L]], round(1 + (10 * (1 + 1 / 10) - 1) * 0.2, 4))
+  # Left-censored Normal(10, 4^2) at a = 2
+  a_c <- (2 - 10) / 4
+  mu_norm <- 10 + 4 * (a_c * stats::pnorm(a_c) + stats::dnorm(a_c))
+  v_norm <- 4 * stats::pnorm(a_c) + 116 * (1 - stats::pnorm(a_c)) + 4 * 12 * stats::dnorm(a_c) - mu_norm^2
+  cv_norm <- sqrt(v_norm) / mu_norm
+  expect_equal(df$deff[[3L]], round(1 + (mu_norm * (1 + cv_norm^2) - 1) * 0.2, 4))
+  # Left-censored Poisson(10) at a = 2
+  pk <- stats::dpois(0:1, 10)
+  mu_pois <- 10 + sum((2 - 0:1) * pk)
+  v_pois <- 10 * 11 + sum((4 - (0:1)^2) * pk) - mu_pois^2
+  cv_pois <- sqrt(v_pois) / mu_pois
+  expect_equal(df$deff[[4L]], round(1 + (mu_pois * (1 + cv_pois^2) - 1) * 0.2, 4))
   expect_equal(df$deff[[5L]], round(1 + (5 - 1) * 0.4, 4))
   expect_equal(df$ar1_rho[[5L]], 0.5)
   expect_true(is.na(df$ar1_rho[[1L]]))

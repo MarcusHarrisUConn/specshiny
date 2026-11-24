@@ -10,10 +10,12 @@ spec_total_n(spec)
 \item{spec}{A \code{spec_ir} object.}
 }
 \value{
-Integer scalar giving total level-1 observations.
+Integer or finite numeric scalar giving total level-1 observations.
 }
 \description{
-Compute total sample size implied by a \code{spec_ir}
+Computes the nominal total number of level-1 observations using double
+arithmetic to avoid 32-bit integer overflow, returning an integer scalar when
+within \code{.Machine$integer.max} and a finite numeric double otherwise.
 }
 \examples{
 spec <- new_spec_ir(

@@ -536,7 +536,8 @@ print.spec_ui_descriptor <- function(x, ...) {
   cli::cli_h3("spec_ui_descriptor ({x$control_count} active controls across {length(x$sections)} sections)")
   for (sec in x$sections) {
     ids <- vapply(sec$controls, `[[`, character(1), "id")
-    cli::cli_bullets(c("*" = sprintf("%s (%d): %s", sec$title, length(ids), paste(ids, collapse = ", "))))
+    sec_line <- sprintf("%s (%d): %s", sec$title, length(ids), paste(ids, collapse = ", "))
+    cli::cli_bullets(c("*" = "{sec_line}"))
   }
   invisible(x)
 }

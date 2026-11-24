@@ -41,17 +41,33 @@ During the v0.2.0 adversarial security audit, the following real vulnerabilities
 
 ---
 
-## 3. Static AST Verification Guarantee (`verify_compiled_r_ast()`)
+## 3. v0.5.0 Independent Peer Red-Team Audit & Hardening
 
-Every script produced by `compile_r_script()` is parsed statically (AST-only, zero evaluation) and verified by `verify_compiled_r_ast(script, strict = TRUE)`:
+Following an independent peer red-team audit of v0.4.0, every reported security and boundary finding was reproduced and fixed with permanent regression coverage in `tests/testthat/test-peer-redteam.R`:
 
-1. **Positive Allowlist Only:** Every call head must be in `SPEC_AST_ALLOWED_BARE_CALLS`, `SPEC_AST_ALLOWED_NS_CALLS` (`base`, `stats`, `lme4`), or a local function defined inside the script (`simulate_one_dataset`, `fit_and_extract`, `run_simulation`).
-2. **Zero `:::` and Zero Dynamic Callees:** Internal triple-colon access and computed callees (e.g., `(get("system"))()`, `funs[[1]]()`) are unconditionally rejected.
-3. **Higher-Order Banned Symbol Blocking:** Banned symbols (`eval`, `parse`, `system`, `system2`, `do.call`, `source`, `unlink`, `file.remove`, `get`, `assign`, etc.) are rejected even when passed as arguments to higher-order functions such as `lapply("id", system)`.
-4. **Package Load Allowlist:** `library()` and `requireNamespace()` are restricted strictly to `"lme4"`.
+| # | Severity | Surface | Vulnerability Found in v0.4.0 | Mitigation Implemented in v0.5.0 |
+| :- | :--- | :--- | :--- | :--- |
+| 1 | **Critical** | `verify_compiled_r_ast()` | Early return in `library()`/`requireNamespace()` skipped AST walking of extra arguments (`quietly =`, `lib.loc =`, `character.only =`). | Validate package argument (including named/partial `package =`) and recursively walk every other argument expression. |
+| 2 | **Critical** | `verify_compiled_r_ast()` | Upfront Pass-1 `local_funs` hoisting permitted call-before-definition shadowing (`getFromNamespace <- function(...) NULL`), and higher-order arguments used a denylist rather than a positive allowlist. | Replaced Pass-1 hoisting with sequential lexical scoping, prohibited shadowing system functions, enforced positive symbol allowlisting for unbound namespace functions, and added positive callable-slot checks on `lapply`/`vapply`/`tryCatch`/`stats::ave`/`stats::uniroot` (blocking both unwhitelisted functions and string callables like `"system"`). |
+| 3 | **Critical** | `cli` printers & `abort_spec_validation()` | Pre-formatted dynamic strings containing `{...}` passed directly to `cli::cli_abort()` / `cli::cli_bullets()` could trigger `glue` expression evaluation. | Switched `abort_spec_validation()` to `rlang::abort()` and passed all dynamic strings via single-pass `"{var}"` interpolation across all S3 `print()` methods. |
+| 4 | **High** | `export_spec_bundle()` / `verify_spec_bundle()` | `validate_bundle_dir()` checked only lexical `..` segments and did not reject symlinked directories or symlinked bundle files (live or dangling). | Added `Sys.readlink()` symlink rejection and canonical directory containment checks on both the bundle root and all four bundle files (`spec.yaml`, `simulation.R`, `report.qmd`, `bundle_manifest.json`). |
+| 5 | **High** | `spec_total_n()` / `validate_spec_ir()` / `run_spec_preview_sim()` | 32-bit integer overflow in `n_clusters * cluster_size` produced `NA_integer_`, bypassing the `is.finite(total_n_orig)` preview DoS cap. | Switched `spec_total_n()` to double arithmetic, enforced explicit sample-size upper bounds (`<= 1e7` total observations) in `validate_spec_ir()`, and hardened `run_spec_preview_sim()` to fail closed on non-finite totals. |
+| 6 | **High** | `translator_openai()` / `translator_ollama()` / `validate_backend_url()` | Private `.auth` environment serialized API keys in cleartext via `saveRDS()`; `model`/`api_key`/`temperature` lacked CRLF and range validation; `validate_backend_url()` accepted link-local cloud metadata IPs and ports `> 65535`. | Moved OpenAI secrets to a session-scoped non-serializing package vault (`.auth_id` SHA-256 handle only), enforced strict ASCII/no-CRLF checks on `model` and `api_key`, bounded `temperature` in `[0, 2]`, and blocked metadata/link-local hosts (`169.254.0.0/16`, `metadata.google.internal`, `0.0.0.0`, `fe80::`, `fd00:ec2::`, numeric/hex IP obfuscations) and invalid TCP ports. |
 
 ---
 
-## 4. Reporting Security Issues
+## 4. Static AST Verification Guarantee (`verify_compiled_r_ast()`)
+
+Every script produced by `compile_r_script()` is parsed statically (AST-only, zero evaluation) and verified by `verify_compiled_r_ast(script, strict = TRUE)`:
+
+1. **Sequential Positive Allowlist Only:** Every call head must be in `SPEC_AST_ALLOWED_BARE_CALLS`, `SPEC_AST_ALLOWED_NS_CALLS` (`base`, `stats`, `lme4`), or a non-shadowing local function already defined earlier in lexical order (`simulate_one_dataset`, `fit_and_extract`, `run_simulation`).
+2. **Zero `:::` and Zero Dynamic Callees:** Internal triple-colon access, super-assignment `<<-`, arbitrary S4 slots (only `@optinfo` is permitted), and computed callees (e.g., `(get("system"))()`, `funs[[1]]()`) are unconditionally rejected.
+3. **Positive Higher-Order Callable & Symbol Allowlist:** Higher-order callable slots (`lapply`, `vapply`, `tryCatch`, `stats::ave`, `stats::uniroot`) accept only inline `function(...)` expressions, allowlisted `pkg::fn` references, or previously defined local/allowlisted function symbols (blocking `Sys.getenv`, `save.image`, `read.delim`, `list.files`, string callables like `"system"`, and aliases).
+4. **Full-Argument Package Load Allowlist:** `library()` and `requireNamespace()` are restricted strictly to `"lme4"` and all remaining argument expressions are recursively walked.
+5. **Narrow RNG Restoration Primitives Only:** `.GlobalEnv` is banned everywhere except in the exact fixed forms `exists(".Random.seed", envir = .GlobalEnv, inherits = FALSE)` and `.GlobalEnv$.Random.seed` used to preserve caller RNG state across `run_simulation()`.
+
+---
+
+## 5. Reporting Security Issues
 
 If you discover a security issue or a bypass of the IR validation, Quarto sanitization, or AST verification layers, please report it via <https://github.com/MarcusHarrisUConn/specshiny/issues> or directly to the maintainer listed in `DESCRIPTION`.

@@ -24,11 +24,12 @@ An S3 object of class \code{spec_ast_verification} with elements:
 \description{
 Parses an R script into an Abstract Syntax Tree (AST) without evaluating any
 code and verifies that \strong{every} function call belongs strictly to a closed
-allowlist of safe statistical/base functions (or functions defined within the
-script itself). Rejects all \code{:::}, dynamic/computed callees, arbitrary
-package loading, and dangerous primitives (\code{eval}, \code{parse}, \code{system},
-\code{system2}, \code{do.call}, \code{source}, \code{unlink}, \code{file.remove}, \code{get}, \code{assign},
-etc.)—even when passed as higher-order function arguments (e.g., to \code{lapply}).
+allowlist of safe statistical/base functions (or non-shadowing local
+functions defined earlier in lexical order). Rejects all \code{:::}, \verb{<<-},
+dynamic/computed callees, arbitrary S4 slots, arbitrary package loading,
+extra-argument injections in \code{library()} / \code{requireNamespace()}, and
+dangerous or unwhitelisted primitives—even when passed as higher-order
+function arguments (e.g., to \code{lapply}, \code{vapply}, or \code{tryCatch}).
 }
 \examples{
 spec <- new_spec_ir()

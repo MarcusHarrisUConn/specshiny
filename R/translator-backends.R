@@ -1,3 +1,38 @@
+# Session-scoped non-serializing secret vault (never persisted by saveRDS())
+.specshiny_secret_vault <- new.env(parent = emptyenv())
+.specshiny_vault_counter <- new.env(parent = emptyenv())
+.specshiny_vault_counter$n <- 0L
+
+store_secret_in_vault <- function(secret) {
+  if (!is_chr_scalar(secret) || !nzchar(secret)) {
+    return("")
+  }
+  .specshiny_vault_counter$n <- .specshiny_vault_counter$n + 1L
+  token <- digest::digest(
+    paste(
+      Sys.getpid(),
+      format(Sys.time(), "%Y%m%d%H%M%OS6"),
+      .specshiny_vault_counter$n,
+      tempfile("specshiny_key_"),
+      sep = "|"
+    ),
+    algo = "sha256"
+  )
+  assign(token, secret, envir = .specshiny_secret_vault)
+  token
+}
+
+fetch_secret_from_vault <- function(token) {
+  if (!is_chr_scalar(token) || !nzchar(token)) {
+    return("")
+  }
+  if (exists(token, envir = .specshiny_secret_vault, inherits = FALSE)) {
+    get(token, envir = .specshiny_secret_vault, inherits = FALSE)
+  } else {
+    ""
+  }
+}
+
 #' Construct the offline deterministic rule-based translator backend
 #'
 #' Creates a zero-dependency, offline, deterministic natural-language parser
@@ -26,15 +61,20 @@ translator_rule <- function(strict = FALSE) {
 #'
 #' Configures an `httr2`-based translator targeting any OpenAI-compatible
 #' `/chat/completions` endpoint. Enforces strict URL validation (HTTPS by
-#' default), API key masking in prints and error traces, bounded HTTP timeouts
-#' and maximum response sizes, JSON-only parsing via `jsonlite::fromJSON()`
-#' (never `eval(parse())`), and strict validation via [validate_spec_ir()].
+#' default, blocking cloud metadata and invalid ports), API key storage in a
+#' session-scoped non-serializing vault (never persisted in plaintext by
+#' `saveRDS()`), masking in prints and error traces, strict control-character
+#' and temperature validation, bounded HTTP timeouts and maximum response
+#' sizes, JSON-only parsing via `jsonlite::fromJSON()` (never `eval(parse())`),
+#' and strict validation via [validate_spec_ir()].
 #'
 #' @param model Character model identifier (e.g., `"gpt-4o-mini"`).
 #' @param api_key API key scalar; defaults to `Sys.getenv("OPENAI_API_KEY")`.
-#'   Stored in a private environment and masked in printed output and errors.
+#'   Stored in a session-scoped non-serializing vault and masked in printed
+#'   output and errors.
 #' @param base_url Base API URL (defaults to `"https://api.openai.com/v1"`).
-#' @param temperature Numeric sampling temperature (defaults to `0` for reproducibility).
+#' @param temperature Numeric sampling temperature in `[0, 2]` (defaults to `0`
+#'   for reproducibility).
 #' @param timeout Numeric HTTP timeout in seconds (`1` to `600`).
 #' @param max_response_bytes Maximum permitted HTTP response size in bytes
 #'   (defaults to `524288L`, i.e., 512 KB).
@@ -53,26 +93,22 @@ translator_openai <- function(model = "gpt-4o-mini",
                               timeout = 60,
                               max_response_bytes = 524288L,
                               allow_http_local = FALSE) {
-  if (!is_chr_scalar(model) || !nzchar(trimws(model))) {
-    cli::cli_abort("{.arg model} must be a non-empty character scalar.")
-  }
+  clean_model <- validate_backend_model(model)
   clean_url <- validate_backend_url(base_url, allow_http_local = isTRUE(allow_http_local))
+  clean_temp <- validate_backend_temperature(temperature)
   clean_timeout <- validate_backend_timeout(timeout)
   clean_max_bytes <- validate_max_response_bytes(max_response_bytes)
-
-  raw_key <- as.character(api_key %||% "")
-  if (length(raw_key) != 1L || is.na(raw_key)) raw_key <- ""
-  auth_env <- new.env(parent = emptyenv())
-  auth_env$api_key <- raw_key
+  raw_key <- validate_backend_api_key(api_key)
+  auth_id <- store_secret_in_vault(raw_key)
 
   structure(
     list(
       name = "openai",
-      model = trimws(model),
+      model = clean_model,
       api_key_masked = mask_api_key(raw_key),
-      .auth = auth_env,
+      .auth_id = auth_id,
       base_url = clean_url,
-      temperature = as.numeric(temperature),
+      temperature = clean_temp,
       timeout = clean_timeout,
       max_response_bytes = clean_max_bytes
     ),
@@ -84,12 +120,13 @@ translator_openai <- function(model = "gpt-4o-mini",
 #'
 #' Configures an `httr2`-based translator targeting a local Ollama `/api/chat`
 #' server with JSON-only output formatting, URL validation (HTTPS or local
-#' loopback HTTP only), bounded timeouts and response sizes, and strict
+#' loopback HTTP only, blocking invalid ports and metadata hosts), strict model
+#' and temperature validation, bounded timeouts and response sizes, and strict
 #' validation via [validate_spec_ir()].
 #'
 #' @param model Local Ollama model name (e.g., `"llama3.1"`).
 #' @param base_url Ollama server URL (defaults to `"http://localhost:11434"`).
-#' @param temperature Numeric sampling temperature (defaults to `0`).
+#' @param temperature Numeric sampling temperature in `[0, 2]` (defaults to `0`).
 #' @param timeout Numeric HTTP timeout in seconds (`1` to `600`).
 #' @param max_response_bytes Maximum permitted HTTP response size in bytes
 #'   (defaults to `524288L`, i.e., 512 KB).
@@ -104,19 +141,18 @@ translator_ollama <- function(model = "llama3.1",
                               temperature = 0,
                               timeout = 120,
                               max_response_bytes = 524288L) {
-  if (!is_chr_scalar(model) || !nzchar(trimws(model))) {
-    cli::cli_abort("{.arg model} must be a non-empty character scalar.")
-  }
+  clean_model <- validate_backend_model(model)
   clean_url <- validate_backend_url(base_url, allow_http_local = TRUE)
+  clean_temp <- validate_backend_temperature(temperature)
   clean_timeout <- validate_backend_timeout(timeout)
   clean_max_bytes <- validate_max_response_bytes(max_response_bytes)
 
   structure(
     list(
       name = "ollama",
-      model = trimws(model),
+      model = clean_model,
       base_url = clean_url,
-      temperature = as.numeric(temperature),
+      temperature = clean_temp,
       timeout = clean_timeout,
       max_response_bytes = clean_max_bytes
     ),
@@ -177,11 +213,10 @@ refine_spec_backend <- function(translator, spec, instruction) {
 }
 
 get_openai_api_key <- function(translator) {
-  if (is.environment(translator$.auth) && exists("api_key", envir = translator$.auth, inherits = FALSE)) {
-    translator$.auth$api_key
-  } else {
-    ""
+  if (is_chr_scalar(translator$.auth_id) && nzchar(translator$.auth_id)) {
+    return(fetch_secret_from_vault(translator$.auth_id))
   }
+  ""
 }
 
 perform_bounded_json_request <- function(req, max_bytes, secret = NULL) {
@@ -197,9 +232,10 @@ perform_bounded_json_request <- function(req, max_bytes, secret = NULL) {
   )
 
   raw_body <- httr2::resp_body_raw(resp)
-  if (length(raw_body) > max_bytes) {
+  n_raw <- length(raw_body)
+  if (n_raw > max_bytes) {
     cli::cli_abort(
-      sprintf("LLM HTTP response size (%d bytes) exceeds maximum allowed (%d bytes).", length(raw_body), max_bytes),
+      "LLM HTTP response size ({n_raw} bytes) exceeds maximum allowed ({max_bytes} bytes).",
       class = "specshiny_security_error"
     )
   }
@@ -379,16 +415,33 @@ unpack_llm_json_payload <- function(content, prompt = NULL, max_bytes = 524288L)
 }
 
 normalize_clarifications <- function(clarifs) {
-  if (is.null(clarifs) || length(clarifs) == 0L) return(list())
-  lapply(seq_along(clarifs), function(i) {
+  if (!is.list(clarifs) || length(clarifs) == 0L) return(list())
+  if (!is.null(names(clarifs)) && any(nzchar(names(clarifs)))) {
+    if (!is.null(clarifs$question) || !is.null(clarifs$path)) {
+      clarifs <- list(clarifs)
+    } else {
+      return(list())
+    }
+  }
+  extract_chr <- function(v, default = "") {
+    if (is.atomic(v) && length(v) >= 1L && !is.na(v[[1L]])) {
+      as.character(v[[1L]])
+    } else {
+      default
+    }
+  }
+  out <- list()
+  for (i in seq_along(clarifs)) {
     cl <- clarifs[[i]]
-    list(
-      id = as.character(cl$id %||% paste0("clarif_", i)),
-      path = as.character(cl$path %||% ""),
-      question = as.character(cl$question %||% ""),
+    if (!is.list(cl)) next
+    out[[length(out) + 1L]] <- list(
+      id = extract_chr(cl$id, paste0("clarif_", i)),
+      path = extract_chr(cl$path, ""),
+      question = extract_chr(cl$question, ""),
       current_default = cl$current_default,
-      options = cl$options %||% list(),
-      rationale = as.character(cl$rationale %||% "")
+      options = if (is.list(cl$options) || is.atomic(cl$options)) as.list(cl$options) else list(),
+      rationale = extract_chr(cl$rationale, "")
     )
-  })
+  }
+  out
 }

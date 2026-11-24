@@ -4,6 +4,9 @@ SPEC_ALLOWED_GRID_PARAMS <- c(
 )
 
 SPEC_MAX_GRID_CELLS <- 250L
+SPEC_MAX_TOTAL_N <- 1e7
+SPEC_MAX_CLUSTERS <- 1000000L
+SPEC_MAX_CLUSTER_SIZE <- 100000L
 
 # Closed nested key allowlists (rejects unexpected LLM-injected properties)
 SPEC_ALLOWED_KEYS <- list(
@@ -269,9 +272,12 @@ validate_spec_ir <- function(spec, strict = FALSE) {
     }
 
     if (identical(levels_val, 1L)) {
-      if (!is_whole_scalar(h$n_obs) || as.integer(h$n_obs) < 5L) {
+      if (!is_whole_scalar(h$n_obs) || as.numeric(h$n_obs) < 5) {
         add_err("hierarchy.n_obs", "invalid_sample_size", "statistical",
                 "1-level design requires integer hierarchy$n_obs >= 5.")
+      } else if (as.numeric(h$n_obs) > SPEC_MAX_TOTAL_N) {
+        add_err("hierarchy.n_obs", "sample_size_exceeds_limit", "statistical",
+                sprintf("hierarchy$n_obs exceeds safety maximum of %.0f observations.", SPEC_MAX_TOTAL_N))
       }
       if (!is.null(h$icc) && (!is_num_scalar(h$icc) || h$icc != 0)) {
         add_err("hierarchy.icc", "icc_in_single_level", "statistical",
@@ -286,17 +292,29 @@ validate_spec_ir <- function(spec, strict = FALSE) {
                 "1-level design cannot specify hierarchy$cluster_size_sd.")
       }
     } else if (identical(levels_val, 2L)) {
-      if (!is_whole_scalar(h$n_clusters) || as.integer(h$n_clusters) < 3L) {
+      if (!is_whole_scalar(h$n_clusters) || as.numeric(h$n_clusters) < 3) {
         add_err("hierarchy.n_clusters", "invalid_n_clusters", "statistical",
                 "2-level design requires integer hierarchy$n_clusters >= 3.")
+      } else if (as.numeric(h$n_clusters) > SPEC_MAX_CLUSTERS) {
+        add_err("hierarchy.n_clusters", "n_clusters_exceeds_limit", "statistical",
+                sprintf("hierarchy$n_clusters exceeds safety maximum of %d clusters.", SPEC_MAX_CLUSTERS))
       } else {
         n_clusters_val <- as.integer(h$n_clusters)
       }
-      if (!is_whole_scalar(h$cluster_size) || as.integer(h$cluster_size) < 2L) {
+      if (!is_whole_scalar(h$cluster_size) || as.numeric(h$cluster_size) < 2) {
         add_err("hierarchy.cluster_size", "invalid_cluster_size", "statistical",
                 "2-level design requires integer hierarchy$cluster_size >= 2.")
+      } else if (as.numeric(h$cluster_size) > SPEC_MAX_CLUSTER_SIZE) {
+        add_err("hierarchy.cluster_size", "cluster_size_exceeds_limit", "statistical",
+                sprintf("hierarchy$cluster_size exceeds safety maximum of %d units per cluster.", SPEC_MAX_CLUSTER_SIZE))
       } else {
         cluster_size_val <- as.integer(h$cluster_size)
+      }
+      if (!is.na(n_clusters_val) && !is.na(cluster_size_val) &&
+          (as.numeric(n_clusters_val) * as.numeric(cluster_size_val) > SPEC_MAX_TOTAL_N)) {
+        add_err("hierarchy", "total_n_exceeds_limit", "statistical",
+                sprintf("Total implied sample size (n_clusters * cluster_size = %.0f) exceeds safety maximum of %.0f observations.",
+                        as.numeric(n_clusters_val) * as.numeric(cluster_size_val), SPEC_MAX_TOTAL_N))
       }
       cs_dist <- h$cluster_size_dist %||% "fixed"
       if (!is_chr_scalar(cs_dist) || !(cs_dist %in% c("fixed", "normal", "poisson"))) {
@@ -309,6 +327,10 @@ validate_spec_ir <- function(spec, strict = FALSE) {
         } else if (!is.na(cluster_size_val) && h$cluster_size_sd >= 5 * cluster_size_val) {
           add_err("hierarchy.cluster_size_sd", "cluster_size_sd_excessive", "statistical",
                   "hierarchy$cluster_size_sd must be < 5 * cluster_size for realistic cluster sizes.")
+        } else if (!is.na(cluster_size_val) && h$cluster_size_sd > 0.5 * cluster_size_val) {
+          add_warn("hierarchy.cluster_size_sd", "cluster_size_left_censoring", "statistical",
+                   sprintf("Large cluster_size_sd (%.2f) relative to cluster_size (%d) causes substantial left-censoring at the minimum cluster size, increasing realized mean cluster size.",
+                           as.numeric(h$cluster_size_sd), cluster_size_val))
         }
       } else if (!is.null(h$cluster_size_sd)) {
         add_err("hierarchy.cluster_size_sd", "unused_cluster_size_sd", "statistical",
@@ -453,10 +475,13 @@ validate_spec_ir <- function(spec, strict = FALSE) {
   }
   pred_level_map <- stats::setNames(pred_levels[seq_along(pred_names)], pred_names)
 
-  # 5b. Optional Predictor Correlation Matrix (strict PD + same-level guardrail)
+  # 5b. Optional Predictor Correlation Matrix (strict PD + same-level + non-time guardrail)
   if (!is.null(spec$predictor_corr)) {
     p_len <- length(spec$predictors)
     pcm <- spec$predictor_corr
+    pred_dists <- vapply(spec$predictors, function(pr) {
+      if (is.list(pr) && is_chr_scalar(pr$distribution)) pr$distribution else ""
+    }, character(1))
     if (check_corr_matrix(pcm, p_len, "predictor_corr") && length(pred_levels) == p_len && !any(is.na(pred_levels))) {
       for (i in seq_len(p_len)) {
         for (j in seq_len(p_len)) {
@@ -465,6 +490,12 @@ validate_spec_ir <- function(spec, strict = FALSE) {
               "predictor_corr", "cross_level_predictor_corr", "statistical",
               sprintf("predictor_corr[%d,%d] cannot specify non-zero correlation between level-%d and level-%d predictors.",
                       i, j, pred_levels[[i]], pred_levels[[j]])
+            )
+          }
+          if (i < j && (identical(pred_dists[[i]], "time") || identical(pred_dists[[j]], "time")) && abs(pcm[i, j]) > 1e-8) {
+            add_err(
+              "predictor_corr", "time_predictor_correlation_forbidden", "statistical",
+              sprintf("predictor_corr[%d,%d] cannot specify non-zero correlation involving a deterministic 'time' predictor.", i, j)
             )
           }
         }
@@ -542,6 +573,17 @@ validate_spec_ir <- function(spec, strict = FALSE) {
           } else if (!is_num_scalar(o$ar1_rho) || abs(o$ar1_rho) >= 0.95) {
             add_err("outcome.ar1_rho", "invalid_ar1_rho", "statistical",
                     "Stationary AR(1) autocorrelation requires finite outcome$ar1_rho strictly in (-0.95, 0.95).")
+          } else if (o$ar1_rho < 0) {
+            ts <- if (is.list(spec$hierarchy)) spec$hierarchy$time_spacing else NULL
+            if (is.numeric(ts) && length(ts) >= 3L && all(is.finite(ts)) &&
+                length(unique(round(diff(ts), 8))) > 1L) {
+              add_warn(
+                "outcome.ar1_rho",
+                "negative_ar1_uneven_spacing",
+                "statistical",
+                "Negative ar1_rho with uneven hierarchy$time_spacing uses discrete unit-step lag correlation (rho^1 per wave step) rather than fractional powers."
+              )
+            }
           }
         }
       } else {
@@ -831,6 +873,14 @@ validate_spec_ir <- function(spec, strict = FALSE) {
         add_err("estimator.engine", "estimator_incompatible", "statistical",
                 sprintf("2-level %s model with random effects requires 'glmer', not '%s'.", out_family, est$engine))
       }
+      if (levels_val == 2L && q_rand == 0L && out_family == "gaussian" && !(est$engine %in% c("lm", "glm"))) {
+        add_err("estimator.engine", "mixed_engine_requires_random_effects", "statistical",
+                sprintf("2-level Gaussian model with zero random effects requires 'lm' or 'glm', not '%s'.", est$engine))
+      }
+      if (levels_val == 2L && q_rand == 0L && out_family != "gaussian" && est$engine != "glm") {
+        add_err("estimator.engine", "mixed_engine_requires_random_effects", "statistical",
+                sprintf("2-level %s model with zero random effects requires 'glm', not '%s'.", out_family, est$engine))
+      }
     }
 
     if (!is_lgl_scalar(est$reml)) {
@@ -895,15 +945,16 @@ validate_spec_ir <- function(spec, strict = FALSE) {
           if (gn == "n_obs") {
             if (!identical(levels_val, 1L)) {
               add_err(gpath, "grid_param_inapplicable", "statistical", "Grid parameter 'n_obs' applies only to 1-level designs.")
-            } else if (any(vals != floor(vals) | vals < 5)) {
-              add_err(gpath, "grid_value_out_of_bounds", "statistical", "All 'n_obs' grid values must be integers >= 5.")
+            } else if (any(vals != floor(vals) | vals < 5 | vals > SPEC_MAX_TOTAL_N)) {
+              add_err(gpath, "grid_value_out_of_bounds", "statistical",
+                      sprintf("All 'n_obs' grid values must be integers in [5, %.0f].", SPEC_MAX_TOTAL_N))
             }
           } else if (gn == "n_clusters") {
             if (!identical(levels_val, 2L)) {
               add_err(gpath, "grid_param_inapplicable", "statistical", "Grid parameter 'n_clusters' applies only to 2-level designs.")
-            } else if (any(vals != floor(vals) | vals < max(3L, q_rand + 1L))) {
+            } else if (any(vals != floor(vals) | vals < max(3L, q_rand + 1L) | vals > SPEC_MAX_CLUSTERS)) {
               add_err(gpath, "grid_value_out_of_bounds", "statistical",
-                      sprintf("All 'n_clusters' grid values must be integers >= %d.", max(3L, q_rand + 1L)))
+                      sprintf("All 'n_clusters' grid values must be integers in [%d, %d].", max(3L, q_rand + 1L), SPEC_MAX_CLUSTERS))
             }
           } else if (gn == "cluster_size") {
             if (!identical(levels_val, 2L)) {
@@ -911,9 +962,9 @@ validate_spec_ir <- function(spec, strict = FALSE) {
             } else if (identical(spec$design_type, "longitudinal_growth")) {
               add_err(gpath, "grid_param_inapplicable", "statistical",
                       "Grid parameter 'cluster_size' is not supported for longitudinal_growth designs with fixed time_spacing.")
-            } else if (any(vals != floor(vals) | vals < max(2L, q_rand + 1L))) {
+            } else if (any(vals != floor(vals) | vals < max(2L, q_rand + 1L) | vals > SPEC_MAX_CLUSTER_SIZE)) {
               add_err(gpath, "grid_value_out_of_bounds", "statistical",
-                      sprintf("All 'cluster_size' grid values must be integers >= %d for identifiability.", max(2L, q_rand + 1L)))
+                      sprintf("All 'cluster_size' grid values must be integers in [%d, %d] for identifiability.", max(2L, q_rand + 1L), SPEC_MAX_CLUSTER_SIZE))
             }
           } else if (gn == "icc") {
             if (!identical(levels_val, 2L)) {
@@ -1011,11 +1062,13 @@ abort_spec_validation <- function(report) {
     sprintf("[%s | %s] %s", report$errors$category, report$errors$path, report$errors$message),
     rep("x", nrow(report$errors))
   )
-  cli::cli_abort(
-    c(
-      sprintf("Invalid spec_ir (%d validation error%s):", nrow(report$errors), if (nrow(report$errors) == 1L) "" else "s"),
-      bullets
-    ),
+  header <- sprintf(
+    "Invalid spec_ir (%d validation error%s):",
+    nrow(report$errors),
+    if (nrow(report$errors) == 1L) "" else "s"
+  )
+  rlang::abort(
+    c(header, bullets),
     class = "specshiny_validation_error"
   )
 }
@@ -1027,12 +1080,14 @@ print.spec_validation <- function(x, ...) {
   } else {
     cli::cli_alert_danger("spec_ir validation failed ({nrow(x$errors)} error{?s}, {nrow(x$warnings)} warning{?s}):")
     for (i in seq_len(nrow(x$errors))) {
-      cli::cli_bullets(c("x" = sprintf("[%s | %s] %s", x$errors$category[[i]], x$errors$path[[i]], x$errors$message[[i]])))
+      err_line <- sprintf("[%s | %s] %s", x$errors$category[[i]], x$errors$path[[i]], x$errors$message[[i]])
+      cli::cli_bullets(c("x" = "{err_line}"))
     }
   }
   if (nrow(x$warnings) > 0L) {
     for (i in seq_len(nrow(x$warnings))) {
-      cli::cli_bullets(c("!" = sprintf("[%s | %s] %s", x$warnings$category[[i]], x$warnings$path[[i]], x$warnings$message[[i]])))
+      warn_line <- sprintf("[%s | %s] %s", x$warnings$category[[i]], x$warnings$path[[i]], x$warnings$message[[i]])
+      cli::cli_bullets(c("!" = "{warn_line}"))
     }
   }
   invisible(x)

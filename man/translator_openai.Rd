@@ -18,11 +18,13 @@ translator_openai(
 \item{model}{Character model identifier (e.g., \code{"gpt-4o-mini"}).}
 
 \item{api_key}{API key scalar; defaults to \code{Sys.getenv("OPENAI_API_KEY")}.
-Stored in a private environment and masked in printed output and errors.}
+Stored in a session-scoped non-serializing vault and masked in printed
+output and errors.}
 
 \item{base_url}{Base API URL (defaults to \code{"https://api.openai.com/v1"}).}
 
-\item{temperature}{Numeric sampling temperature (defaults to \code{0} for reproducibility).}
+\item{temperature}{Numeric sampling temperature in \verb{[0, 2]} (defaults to \code{0}
+for reproducibility).}
 
 \item{timeout}{Numeric HTTP timeout in seconds (\code{1} to \code{600}).}
 
@@ -38,9 +40,12 @@ An S3 object of class \code{c("spec_translator_openai", "spec_translator")}.
 \description{
 Configures an \code{httr2}-based translator targeting any OpenAI-compatible
 \verb{/chat/completions} endpoint. Enforces strict URL validation (HTTPS by
-default), API key masking in prints and error traces, bounded HTTP timeouts
-and maximum response sizes, JSON-only parsing via \code{jsonlite::fromJSON()}
-(never \code{eval(parse())}), and strict validation via \code{\link[=validate_spec_ir]{validate_spec_ir()}}.
+default, blocking cloud metadata and invalid ports), API key storage in a
+session-scoped non-serializing vault (never persisted in plaintext by
+\code{saveRDS()}), masking in prints and error traces, strict control-character
+and temperature validation, bounded HTTP timeouts and maximum response
+sizes, JSON-only parsing via \code{jsonlite::fromJSON()} (never \code{eval(parse())}),
+and strict validation via \code{\link[=validate_spec_ir]{validate_spec_ir()}}.
 }
 \examples{
 tr <- translator_openai(model = "gpt-4o-mini", api_key = "sk-demo-1234567890")

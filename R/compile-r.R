@@ -348,7 +348,7 @@ build_dgp_block <- function(spec) {
       }
       for (pos in seq_len(k)) {
         p <- spec$predictors[[lvl_idx[[pos]]]]
-        z_col <- sprintf("%s[, %dL]", z_sym, pos)
+        z_col <- sprintf("%s[, %dL, drop = TRUE]", z_sym, pos)
         raw_expr <- switch(
           p$distribution,
           time = "params$time_spacing[wave_idx]",
@@ -433,8 +433,9 @@ build_dgp_block <- function(spec) {
         "1.0"
       }
 
+      icc_in_grid <- "icc" %in% names(spec$simulation$parameter_grid %||% list())
       if (has_rint) {
-        if (!is.null(spec$effects$random$intercept_sd)) {
+        if (!is.null(spec$effects$random$intercept_sd) && !icc_in_grid) {
           lines <- c(lines, "  tau0 <- params$intercept_sd")
         } else {
           lines <- c(
@@ -454,11 +455,11 @@ build_dgp_block <- function(spec) {
       } else {
         sd_parts <- c(
           if (has_rint) "tau0" else character(),
-          vapply(slopes, function(sl) sprintf("params$slope_sds[%s]", deparse1(sl$predictor)), character(1))
+          vapply(slopes, function(sl) sprintf("params$slope_sds[[%s]]", deparse1(sl$predictor)), character(1))
         )
         lines <- c(
           lines,
-          sprintf("  re_sds <- as.numeric(c(%s))", paste(sd_parts, collapse = ", ")),
+          sprintf("  re_sds <- unname(c(%s))", paste(sd_parts, collapse = ", ")),
           sprintf("  q_rand <- %dL", q_rand),
           "  U <- matrix(0, nrow = n_clusters, ncol = q_rand)",
           "  pos_idx <- which(re_sds > 0)",
@@ -473,11 +474,11 @@ build_dgp_block <- function(spec) {
         )
         col_i <- 1L
         if (has_rint) {
-          lines <- c(lines, "  eta <- eta + U[cluster_idx, 1L]")
+          lines <- c(lines, "  eta <- eta + U[cluster_idx, 1L, drop = TRUE]")
           col_i <- 2L
         }
         for (sl in slopes) {
-          lines <- c(lines, sprintf("  eta <- eta + U[cluster_idx, %dL] * dat$%s", col_i, sl$predictor))
+          lines <- c(lines, sprintf("  eta <- eta + U[cluster_idx, %dL, drop = TRUE] * dat$%s", col_i, sl$predictor))
           col_i <- col_i + 1L
         }
       }
@@ -610,37 +611,49 @@ build_fit_block <- function(spec, formula_str, focal) {
     lm = c(
       sprintf("      fit <- stats::lm(%s, data = dat_cc)", formula_str),
       "      sm <- stats::coef(summary(fit))",
-      "      est <- unname(sm[focal, 1L])",
-      "      se <- unname(sm[focal, 2L])",
-      "      p_val <- unname(sm[focal, 4L])",
-      "      crit <- stats::qt(1 - (1 - params$conf_level) / 2, df = fit$df.residual)"
+      "      est <- unname(sm[focal, 1L, drop = TRUE])",
+      "      se <- unname(sm[focal, 2L, drop = TRUE])",
+      "      p_val <- unname(sm[focal, 4L, drop = TRUE])",
+      "      crit <- stats::qt(1 - (1 - params$conf_level) / 2, df = fit$df.residual)",
+      "      conv_ok <- is.finite(est) && is.finite(se) && se > 0"
     ),
     glm = c(
       sprintf("      fit <- stats::glm(%s, data = dat_cc, family = stats::%s(link = %s))",
               formula_str, fam, deparse1(lnk)),
       "      sm <- stats::coef(summary(fit))",
-      "      est <- unname(sm[focal, 1L])",
-      "      se <- unname(sm[focal, 2L])",
-      "      p_val <- unname(sm[focal, 4L])",
-      "      crit <- stats::qnorm(1 - (1 - params$conf_level) / 2)"
+      "      est <- unname(sm[focal, 1L, drop = TRUE])",
+      "      se <- unname(sm[focal, 2L, drop = TRUE])",
+      "      p_val <- unname(sm[focal, 4L, drop = TRUE])",
+      "      crit <- stats::qnorm(1 - (1 - params$conf_level) / 2)",
+      "      conv_ok <- isTRUE(fit$converged) && is.finite(est) && is.finite(se) && se > 0"
     ),
     lmer = c(
       sprintf("      fit <- suppressMessages(lme4::lmer(%s, data = dat_cc, REML = isTRUE(params$reml)))", formula_str),
       "      sm <- stats::coef(summary(fit))",
-      "      est <- unname(sm[focal, 1L])",
-      "      se <- unname(sm[focal, 2L])",
-      "      t_val <- unname(sm[focal, 3L])",
+      "      est <- unname(sm[focal, 1L, drop = TRUE])",
+      "      se <- unname(sm[focal, 2L, drop = TRUE])",
+      "      t_val <- unname(sm[focal, 3L, drop = TRUE])",
       "      p_val <- 2 * stats::pnorm(-abs(t_val))",
-      "      crit <- stats::qnorm(1 - (1 - params$conf_level) / 2)"
+      "      crit <- stats::qnorm(1 - (1 - params$conf_level) / 2)",
+      "      is_sing <- lme4::isSingular(fit)",
+      "      opt_code <- fit@optinfo$conv$opt",
+      "      opt_msgs <- fit@optinfo$conv$lme4$messages",
+      "      opt_ok <- (is.null(opt_code) || isTRUE(opt_code == 0)) && (is.null(opt_msgs) || length(opt_msgs) == 0L)",
+      "      conv_ok <- !is_sing && opt_ok && is.finite(est) && is.finite(se) && se > 0"
     ),
     glmer = c(
       sprintf("      fit <- suppressMessages(lme4::glmer(%s, data = dat_cc, family = stats::%s(link = %s)))",
               formula_str, fam, deparse1(lnk)),
       "      sm <- stats::coef(summary(fit))",
-      "      est <- unname(sm[focal, 1L])",
-      "      se <- unname(sm[focal, 2L])",
-      "      p_val <- unname(sm[focal, 4L])",
-      "      crit <- stats::qnorm(1 - (1 - params$conf_level) / 2)"
+      "      est <- unname(sm[focal, 1L, drop = TRUE])",
+      "      se <- unname(sm[focal, 2L, drop = TRUE])",
+      "      p_val <- unname(sm[focal, 4L, drop = TRUE])",
+      "      crit <- stats::qnorm(1 - (1 - params$conf_level) / 2)",
+      "      is_sing <- lme4::isSingular(fit)",
+      "      opt_code <- fit@optinfo$conv$opt",
+      "      opt_msgs <- fit@optinfo$conv$lme4$messages",
+      "      opt_ok <- (is.null(opt_code) || isTRUE(opt_code == 0)) && (is.null(opt_msgs) || length(opt_msgs) == 0L)",
+      "      conv_ok <- !is_sing && opt_ok && is.finite(est) && is.finite(se) && se > 0"
     )
   )
 
@@ -656,7 +669,7 @@ build_fit_block <- function(spec, formula_str, focal) {
     "      ci_low <- est - crit * se",
     "      ci_high <- est + crit * se",
     "      list(",
-    "        converged = is.finite(est) && is.finite(se) && se > 0,",
+    "        converged = conv_ok,",
     "        est = est,",
     "        se = se,",
     "        p_value = p_val,",
@@ -678,6 +691,15 @@ build_runner_block <- function(spec) {
   lines <- c(
     "# --- 4. Monte Carlo Simulation Runner ---",
     "run_simulation <- function(cfg) {",
+    "  old_kind <- RNGkind()",
+    "  has_seed <- exists(\".Random.seed\", envir = .GlobalEnv, inherits = FALSE)",
+    "  old_seed <- if (has_seed) .GlobalEnv$.Random.seed else NULL",
+    "  on.exit({",
+    "    RNGkind(kind = old_kind[1L], normal.kind = old_kind[2L], sample.kind = old_kind[3L])",
+    "    if (has_seed) {",
+    "      .GlobalEnv$.Random.seed <- old_seed",
+    "    }",
+    "  }, add = TRUE)",
     "  set.seed(cfg$seed, kind = \"L'Ecuyer-CMRG\", normal.kind = \"Inversion\", sample.kind = \"Rejection\")",
     "  has_grid <- length(cfg$parameter_grid) > 0L",
     "  grid_df <- if (has_grid) {",

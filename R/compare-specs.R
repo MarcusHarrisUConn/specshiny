@@ -107,26 +107,54 @@ compare_specs <- function(...,
     nm <- scen_names[[i]]
     sp <- specs[[i]]
     lvls <- as.integer(sp$hierarchy$levels)
-    total_n <- as.integer(spec_total_n(sp))
     n_cl <- if (lvls == 2L) as.integer(sp$hierarchy$n_clusters) else NA_integer_
     cs <- if (lvls == 2L) as.integer(sp$hierarchy$cluster_size) else NA_integer_
     cs_dist <- if (lvls == 2L) as.character(sp$hierarchy$cluster_size_dist %||% "fixed") else "none"
 
-    cv <- if (lvls == 1L || identical(cs_dist, "fixed")) {
-      0
-    } else if (identical(cs_dist, "normal")) {
-      as.numeric(sp$hierarchy$cluster_size_sd) / as.numeric(cs)
-    } else if (identical(cs_dist, "poisson")) {
-      1 / sqrt(as.numeric(cs))
+    # Exact cluster-size moments accounting for left-censoring at min_nj
+    min_nj <- if (lvls == 2L) {
+      max(2L, as.integer(isTRUE(sp$effects$random$intercept)) + length(sp$effects$random$slopes %||% list()) + 1L)
     } else {
-      0
+      1L
+    }
+
+    if (lvls == 1L) {
+      eff_mean_cs <- NA_real_
+      cv <- 0
+      total_n <- as.numeric(spec_total_n(sp))
+    } else if (identical(cs_dist, "normal")) {
+      mu_c <- as.numeric(cs)
+      sd_c <- as.numeric(sp$hierarchy$cluster_size_sd)
+      a_c <- as.numeric(min_nj)
+      alpha_c <- (a_c - mu_c) / sd_c
+      Phi_a <- stats::pnorm(alpha_c)
+      phi_a <- stats::dnorm(alpha_c)
+      # Exact moments of left-censored Y = max(a, X), X ~ N(mu, sd^2)
+      eff_mean_cs <- mu_c + sd_c * (alpha_c * Phi_a + phi_a)
+      e_y2 <- (a_c^2) * Phi_a + (mu_c^2 + sd_c^2) * (1 - Phi_a) + sd_c * (mu_c + a_c) * phi_a
+      var_y <- max(0, e_y2 - eff_mean_cs^2)
+      cv <- if (eff_mean_cs > 0) sqrt(var_y) / eff_mean_cs else 0
+      total_n <- round(as.numeric(n_cl) * eff_mean_cs)
+    } else if (identical(cs_dist, "poisson")) {
+      lam <- as.numeric(cs)
+      ks <- seq.int(0L, min_nj - 1L)
+      pk <- stats::dpois(ks, lambda = lam)
+      eff_mean_cs <- lam + sum((min_nj - ks) * pk)
+      e_y2 <- lam * (lam + 1) + sum((min_nj^2 - ks^2) * pk)
+      var_y <- max(0, e_y2 - eff_mean_cs^2)
+      cv <- if (eff_mean_cs > 0) sqrt(var_y) / eff_mean_cs else 0
+      total_n <- round(as.numeric(n_cl) * eff_mean_cs)
+    } else {
+      eff_mean_cs <- as.numeric(cs)
+      cv <- 0
+      total_n <- as.numeric(spec_total_n(sp))
     }
 
     icc_v <- if (lvls == 2L) as.numeric(sp$hierarchy$icc %||% 0) else 0
     deff <- if (lvls == 1L) {
       1
     } else {
-      1 + (as.numeric(cs) * (1 + cv^2) - 1) * icc_v
+      1 + (eff_mean_cs * (1 + cv^2) - 1) * icc_v
     }
     n_eff <- as.numeric(total_n) / deff
 
@@ -280,12 +308,11 @@ print.spec_comparison <- function(x, ...) {
     } else {
       ""
     }
-    cli::cli_bullets(c(
-      "*" = sprintf(
-        "%s: %d IR path diff(s) | delta N_eff = %+.1f, delta DEFF = %+.3f%s",
-        nm, d$n_changes, d_neff, d_deff, pwr_txt
-      )
-    ))
+    line_txt <- sprintf(
+      "%s: %d IR path diff(s) | delta N_eff = %+.1f, delta DEFF = %+.3f%s",
+      nm, d$n_changes, d_neff, d_deff, pwr_txt
+    )
+    cli::cli_bullets(c("*" = "{line_txt}"))
   }
   invisible(x)
 }

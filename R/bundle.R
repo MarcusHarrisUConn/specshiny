@@ -40,15 +40,24 @@ export_spec_bundle <- function(spec,
   if (!dir.exists(clean_dir)) {
     cli::cli_abort("Could not create bundle directory: {.path {clean_dir}}.")
   }
+  if (is_symlink_path(clean_dir)) {
+    cli::cli_abort("Bundle directory {.path {clean_dir}} must not be a symbolic link.", class = "specshiny_security_error")
+  }
+  canon_dir <- normalizePath(clean_dir, winslash = "/", mustWork = TRUE)
 
   target_names <- c("spec.yaml", "simulation.R", "report.qmd", "bundle_manifest.json")
-  target_paths <- stats::setNames(file.path(clean_dir, target_names), target_names)
+  target_paths <- stats::setNames(file.path(canon_dir, target_names), target_names)
+
+  # Fail closed on any pre-existing symlink (live or dangling) or out-of-root target
+  for (fn in target_names) {
+    assert_safe_bundle_file_target(target_paths[[fn]], canon_dir, fn)
+  }
 
   if (!isTRUE(overwrite)) {
     existing <- target_names[file.exists(target_paths)]
     if (length(existing) > 0L) {
       cli::cli_abort(
-        "Refusing to overwrite existing bundle file(s) in {.path {clean_dir}}: {.file {existing}}. Pass {.code overwrite = TRUE} to replace."
+        "Refusing to overwrite existing bundle file(s) in {.path {canon_dir}}: {.file {existing}}. Pass {.code overwrite = TRUE} to replace."
       )
     }
   }
@@ -74,7 +83,7 @@ export_spec_bundle <- function(spec,
 
   pkg_ver <- tryCatch(
     as.character(utils::packageVersion("specshiny")),
-    error = function(e) "0.4.0"
+    error = function(e) "0.5.0"
   )
 
   manifest <- list(
@@ -125,7 +134,23 @@ verify_spec_bundle <- function(dir) {
   clean_dir <- validate_bundle_dir(dir)
   issues <- character()
 
-  manifest_path <- file.path(clean_dir, "bundle_manifest.json")
+  if (!dir.exists(clean_dir)) {
+    return(structure(
+      list(valid = FALSE, issues = "Bundle directory does not exist.", manifest = NULL,
+           spec_validation = NULL, ast_verification = NULL),
+      class = "spec_bundle_verification"
+    ))
+  }
+  canon_dir <- normalizePath(clean_dir, winslash = "/", mustWork = TRUE)
+
+  manifest_path <- file.path(canon_dir, "bundle_manifest.json")
+  if (is_symlink_path(manifest_path) || (file.exists(manifest_path) && !is_path_within_dir(manifest_path, canon_dir))) {
+    return(structure(
+      list(valid = FALSE, issues = "bundle_manifest.json is a symbolic link or escapes the bundle directory (forbidden).",
+           manifest = NULL, spec_validation = NULL, ast_verification = NULL),
+      class = "spec_bundle_verification"
+    ))
+  }
   if (!file.exists(manifest_path)) {
     return(structure(
       list(valid = FALSE, issues = "Missing bundle_manifest.json.", manifest = NULL,
@@ -149,13 +174,23 @@ verify_spec_bundle <- function(dir) {
     ))
   }
 
-  # Verify SHA-256 checksums for every listed artifact
+  # Verify symlink safety, canonical containment, and SHA-256 checksums for every artifact
+  safe_files <- stats::setNames(rep(FALSE, 3L), c("spec.yaml", "simulation.R", "report.qmd"))
   for (fn in c("spec.yaml", "simulation.R", "report.qmd")) {
-    fp <- file.path(clean_dir, fn)
+    fp <- file.path(canon_dir, fn)
+    if (is_symlink_path(fp)) {
+      issues <- c(issues, sprintf("Bundle file '%s' is a symbolic link (forbidden).", fn))
+      next
+    }
     if (!file.exists(fp)) {
       issues <- c(issues, sprintf("Missing required bundle file '%s'.", fn))
       next
     }
+    if (!is_path_within_dir(fp, canon_dir)) {
+      issues <- c(issues, sprintf("Bundle file '%s' resolves outside the bundle directory (forbidden).", fn))
+      next
+    }
+    safe_files[[fn]] <- TRUE
     expected_sha <- manifest$files[[fn]]$sha256 %||% ""
     actual_sha <- digest::digest(file = fp, algo = "sha256")
     if (!identical(expected_sha, actual_sha)) {
@@ -165,8 +200,8 @@ verify_spec_bundle <- function(dir) {
 
   # Validate spec.yaml
   spec_val <- NULL
-  spec_path <- file.path(clean_dir, "spec.yaml")
-  if (file.exists(spec_path)) {
+  spec_path <- file.path(canon_dir, "spec.yaml")
+  if (isTRUE(safe_files[["spec.yaml"]])) {
     spec_obj <- tryCatch(read_spec_ir(spec_path, validate = FALSE), error = function(e) e)
     if (inherits(spec_obj, "error")) {
       issues <- c(issues, paste("Failed to parse spec.yaml:", conditionMessage(spec_obj)))
@@ -180,8 +215,8 @@ verify_spec_bundle <- function(dir) {
 
   # Statically verify simulation.R AST
   ast_val <- NULL
-  sim_path <- file.path(clean_dir, "simulation.R")
-  if (file.exists(sim_path)) {
+  sim_path <- file.path(canon_dir, "simulation.R")
+  if (isTRUE(safe_files[["simulation.R"]])) {
     code_lines <- readLines(sim_path, warn = FALSE, encoding = "UTF-8")
     ast_val <- verify_compiled_r_ast(code_lines, strict = FALSE)
     if (!ast_val$safe) {
@@ -208,10 +243,39 @@ print.spec_bundle_verification <- function(x, ...) {
   } else {
     cli::cli_alert_danger("Bundle verification FAILED ({length(x$issues)} issue{?s}):")
     for (iss in x$issues) {
-      cli::cli_bullets(c("x" = iss))
+      cli::cli_bullets(c("x" = "{iss}"))
     }
   }
   invisible(x)
+}
+
+is_symlink_path <- function(path) {
+  if (!is_chr_scalar(path) || !nzchar(path)) return(FALSE)
+  trimmed <- if (identical(path, "/")) "/" else sub("/+$", "", path)
+  lnk <- tryCatch(Sys.readlink(trimmed), error = function(e) "")
+  is.character(lnk) && length(lnk) == 1L && !is.na(lnk) && nzchar(lnk)
+}
+
+is_path_within_dir <- function(file_path, canon_dir) {
+  canon_fp <- tryCatch(normalizePath(file_path, winslash = "/", mustWork = TRUE), error = function(e) "")
+  if (!nzchar(canon_fp)) return(FALSE)
+  identical(dirname(canon_fp), canon_dir)
+}
+
+assert_safe_bundle_file_target <- function(file_path, canon_dir, filename) {
+  if (is_symlink_path(file_path)) {
+    cli::cli_abort(
+      "Refusing to write through symbolic link {.file {filename}} inside bundle directory.",
+      class = "specshiny_security_error"
+    )
+  }
+  if (file.exists(file_path) && !is_path_within_dir(file_path, canon_dir)) {
+    cli::cli_abort(
+      "Refusing to write bundle file {.file {filename}} resolving outside bundle directory.",
+      class = "specshiny_security_error"
+    )
+  }
+  invisible(TRUE)
 }
 
 validate_bundle_dir <- function(dir) {
@@ -221,9 +285,14 @@ validate_bundle_dir <- function(dir) {
   if (grepl("[[:cntrl:]]", dir)) {
     cli::cli_abort("{.arg dir} must not contain control characters.", class = "specshiny_security_error")
   }
-  parts <- strsplit(gsub("\\\\", "/", dir), "/", fixed = TRUE)[[1L]]
+  norm_slashes <- gsub("\\\\", "/", dir)
+  parts <- strsplit(norm_slashes, "/", fixed = TRUE)[[1L]]
   if (any(parts == "..")) {
     cli::cli_abort("{.arg dir} must not contain '..' path-traversal segments.", class = "specshiny_security_error")
   }
-  normalizePath(dir, winslash = "/", mustWork = FALSE)
+  trimmed <- if (identical(norm_slashes, "/")) "/" else sub("/+$", "", norm_slashes)
+  if (is_symlink_path(trimmed)) {
+    cli::cli_abort("Bundle directory {.path {dir}} must not be a symbolic link.", class = "specshiny_security_error")
+  }
+  normalizePath(trimmed, winslash = "/", mustWork = FALSE)
 }

@@ -613,8 +613,12 @@ as_spec_ir <- function(x, validate = TRUE) {
 
 #' Compute total sample size implied by a `spec_ir`
 #'
+#' Computes the nominal total number of level-1 observations using double
+#' arithmetic to avoid 32-bit integer overflow, returning an integer scalar when
+#' within `.Machine$integer.max` and a finite numeric double otherwise.
+#'
 #' @param spec A `spec_ir` object.
-#' @return Integer scalar giving total level-1 observations.
+#' @return Integer or finite numeric scalar giving total level-1 observations.
 #' @export
 #' @examples
 #' spec <- new_spec_ir(
@@ -626,10 +630,18 @@ spec_total_n <- function(spec) {
   if (!is.list(spec) || is.null(spec$hierarchy)) {
     return(NA_integer_)
   }
-  if (identical(as.integer(spec$hierarchy$levels), 2L)) {
-    as.integer(spec$hierarchy$n_clusters) * as.integer(spec$hierarchy$cluster_size)
+  tot <- if (identical(as.integer(spec$hierarchy$levels), 2L)) {
+    as.numeric(spec$hierarchy$n_clusters) * as.numeric(spec$hierarchy$cluster_size)
   } else {
-    as.integer(spec$hierarchy$n_obs)
+    as.numeric(spec$hierarchy$n_obs)
+  }
+  if (length(tot) != 1L || !is.finite(tot)) {
+    return(NA_integer_)
+  }
+  if (tot <= .Machine$integer.max && tot == floor(tot)) {
+    as.integer(tot)
+  } else {
+    tot
   }
 }
 

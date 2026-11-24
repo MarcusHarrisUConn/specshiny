@@ -305,26 +305,43 @@ run_spec_preview_sim <- function(spec,
     NA_real_
   }
 
-  total_n_orig <- spec_total_n(spec)
-  if (is.finite(total_n_orig) && total_n_orig > as.integer(max_n)) {
+  total_n_orig <- as.numeric(spec_total_n(spec))
+  if (!is.finite(total_n_orig) || total_n_orig > as.numeric(max_n)) {
+    scaled_down <- FALSE
     if (levels_val == 1L) {
-      eff_n_obs <- as.integer(max_n)
+      orig_n_obs <- eff_n_obs
+      eff_n_obs <- min(orig_n_obs, as.integer(max_n))
+      scaled_down <- eff_n_obs < orig_n_obs
     } else if (is_long) {
+      orig_n_cl <- eff_n_cl
       q_min <- max(3L, as.integer(isTRUE(spec$effects$random$intercept)) + length(spec$effects$random$slopes %||% list()) + 2L)
-      eff_n_cl <- max(q_min, as.integer(floor(as.numeric(max_n) / as.numeric(eff_cs))))
+      floor_cl <- min(orig_n_cl, q_min)
+      target_cl <- as.integer(floor(as.numeric(max_n) / as.numeric(eff_cs)))
+      eff_n_cl <- min(orig_n_cl, max(floor_cl, target_cl))
+      scaled_down <- eff_n_cl < orig_n_cl
     } else {
-      scale_f <- sqrt(as.numeric(max_n) / as.numeric(total_n_orig))
+      orig_n_cl <- eff_n_cl
+      orig_cs <- eff_cs
+      scale_f <- if (is.finite(total_n_orig) && total_n_orig > 0) sqrt(as.numeric(max_n) / total_n_orig) else 0.1
       q_min <- max(3L, as.integer(isTRUE(spec$effects$random$intercept)) + length(spec$effects$random$slopes %||% list()) + 2L)
-      eff_n_cl <- max(q_min, as.integer(floor(eff_n_cl * scale_f)))
-      eff_cs <- max(q_min, as.integer(floor(eff_cs * scale_f)))
+      eff_n_cl <- min(orig_n_cl, max(min(orig_n_cl, q_min), as.integer(floor(as.numeric(orig_n_cl) * scale_f))))
+      eff_cs <- min(orig_cs, max(min(orig_cs, q_min), as.integer(floor(as.numeric(orig_cs) * scale_f))))
       if (is.finite(eff_cs_sd)) {
         eff_cs_sd <- max(0.5, eff_cs_sd * scale_f)
       }
+      scaled_down <- (as.numeric(eff_n_cl) * as.numeric(eff_cs)) < total_n_orig
     }
-    warns <- c(
-      warns,
-      sprintf("Preview sample size scaled down from N = %d to fit the %d-observation interactive budget.", total_n_orig, as.integer(max_n))
-    )
+    if (isTRUE(scaled_down)) {
+      warns <- c(
+        warns,
+        sprintf("Preview sample size scaled down from N = %.0f to fit the %d-observation interactive budget.", total_n_orig, as.integer(max_n))
+      )
+    } else {
+      warns <- c(
+        warns,
+        sprintf("Preview retained minimum identifiable sample size (N = %.0f exceeds the %d-observation interactive budget).", total_n_orig, as.integer(max_n))
+      )
+    }
   }
 
   y_name <- spec$outcome$name
@@ -520,7 +537,7 @@ run_spec_preview_sim <- function(spec,
         az_s <- if (is.finite(asd_s) && asd_s > 0) (ax_s - mean(ax_s)) / asd_s else rep(0, eff_n_cl)
         g <- as.numeric(spec$missingness$strength %||% 1.0)
         a0 <- tryCatch(
-          stats::uniroot(function(a) mean(stats::plogis(a + g * az_s)) - h_base, c(-25, 25))$root,
+          stats::uniroot(function(a) mean(1 - (1 - stats::plogis(a + g * az_s))^(eff_cs - 1L)) - tr, c(-25, 25))$root,
           error = function(e) stats::qlogis(h_base)
         )
         h_vec <- stats::plogis(a0 + g * az_s)
@@ -539,6 +556,7 @@ run_spec_preview_sim <- function(spec,
 
     dat_cc <- stats::na.omit(dat)
     tryCatch({
+      conv_ok <- TRUE
       if (engine == "lm") {
         fit <- stats::lm(form, data = dat_cc)
         sm <- stats::coef(summary(fit))
@@ -550,20 +568,29 @@ run_spec_preview_sim <- function(spec,
         sm <- stats::coef(summary(fit))
         est <- unname(sm[focal, 1L]); se <- unname(sm[focal, 2L]); pv <- unname(sm[focal, 4L])
         crit <- stats::qnorm(1 - (1 - spec$estimator$conf_level) / 2)
+        conv_ok <- isTRUE(fit$converged)
       } else if (engine == "lmer") {
         fit <- suppressMessages(lme4::lmer(form, data = dat_cc, REML = isTRUE(spec$estimator$reml)))
         sm <- stats::coef(summary(fit))
         est <- unname(sm[focal, 1L]); se <- unname(sm[focal, 2L]); pv <- 2 * stats::pnorm(-abs(unname(sm[focal, 3L])))
         crit <- stats::qnorm(1 - (1 - spec$estimator$conf_level) / 2)
+        opt_code <- fit@optinfo$conv$opt
+        opt_msgs <- fit@optinfo$conv$lme4$messages
+        opt_ok <- (is.null(opt_code) || isTRUE(opt_code == 0)) && (is.null(opt_msgs) || length(opt_msgs) == 0L)
+        conv_ok <- !lme4::isSingular(fit) && opt_ok
       } else {
         fam_fn <- switch(fam, gaussian = stats::gaussian, binomial = stats::binomial, poisson = stats::poisson)
         fit <- suppressMessages(lme4::glmer(form, data = dat_cc, family = fam_fn(link = lnk)))
         sm <- stats::coef(summary(fit))
         est <- unname(sm[focal, 1L]); se <- unname(sm[focal, 2L]); pv <- unname(sm[focal, 4L])
         crit <- stats::qnorm(1 - (1 - spec$estimator$conf_level) / 2)
+        opt_code <- fit@optinfo$conv$opt
+        opt_msgs <- fit@optinfo$conv$lme4$messages
+        opt_ok <- (is.null(opt_code) || isTRUE(opt_code == 0)) && (is.null(opt_msgs) || length(opt_msgs) == 0L)
+        conv_ok <- !lme4::isSingular(fit) && opt_ok
       }
       list(
-        converged = is.finite(est) && is.finite(se) && se > 0,
+        converged = conv_ok && is.finite(est) && is.finite(se) && se > 0,
         est = est, se = se,
         reject = is.finite(pv) && pv < spec$simulation$alpha,
         covered = is.finite(est) && is.finite(se) && (true_beta >= est - crit * se) && (true_beta <= est + crit * se)

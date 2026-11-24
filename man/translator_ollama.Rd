@@ -17,7 +17,7 @@ translator_ollama(
 
 \item{base_url}{Ollama server URL (defaults to \code{"http://localhost:11434"}).}
 
-\item{temperature}{Numeric sampling temperature (defaults to \code{0}).}
+\item{temperature}{Numeric sampling temperature in \verb{[0, 2]} (defaults to \code{0}).}
 
 \item{timeout}{Numeric HTTP timeout in seconds (\code{1} to \code{600}).}
 
@@ -30,7 +30,8 @@ An S3 object of class \code{c("spec_translator_ollama", "spec_translator")}.
 \description{
 Configures an \code{httr2}-based translator targeting a local Ollama \verb{/api/chat}
 server with JSON-only output formatting, URL validation (HTTPS or local
-loopback HTTP only), bounded timeouts and response sizes, and strict
+loopback HTTP only, blocking invalid ports and metadata hosts), strict model
+and temperature validation, bounded timeouts and response sizes, and strict
 validation via \code{\link[=validate_spec_ir]{validate_spec_ir()}}.
 }
 \examples{

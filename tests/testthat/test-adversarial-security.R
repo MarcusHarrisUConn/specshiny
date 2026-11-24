@@ -350,9 +350,14 @@ test_that("compiled R scripts empirically recover predictor correlation, negativ
   sys.source(p_r, envir = env1)
   sys.source(p_r, envir = env2)
 
-  # Bit-for-bit reproducible L'Ecuyer-CMRG runs
+  # Bit-for-bit reproducible L'Ecuyer-CMRG runs that preserve caller RNGkind() and .Random.seed
+  RNGkind("Mersenne-Twister", "Inversion", "Rejection")
+  set.seed(999L)
+  seed_before <- .GlobalEnv$.Random.seed
+  kind_before <- RNGkind()
   res1 <- env1$run_simulation(env1$cfg)
-  expect_equal(RNGkind()[1L], "L'Ecuyer-CMRG")
+  expect_identical(RNGkind(), kind_before)
+  expect_identical(.GlobalEnv$.Random.seed, seed_before)
   res2 <- env2$run_simulation(env2$cfg)
   expect_identical(res1$raw, res2$raw)
 

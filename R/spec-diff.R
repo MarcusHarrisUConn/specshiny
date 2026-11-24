@@ -141,7 +141,8 @@ print.spec_diff <- function(x, ...) {
   cli::cli_h3("spec_diff ({x$n_changes} change{?s} across {length(x$changed_sections)} section{?s})")
   for (i in seq_len(nrow(x$changes))) {
     sym <- switch(x$changes$change_type[[i]], added = "v", removed = "x", modified = "*")
-    cli::cli_bullets(stats::setNames(x$changes$summary[[i]], sym))
+    line_txt <- x$changes$summary[[i]]
+    cli::cli_bullets(stats::setNames("{line_txt}", sym))
   }
   invisible(x)
 }
