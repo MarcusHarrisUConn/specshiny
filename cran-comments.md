@@ -9,6 +9,10 @@ Checked locally on macOS (`aarch64-apple-darwin23`, R 4.6.1):
 * `devtools::test()`: 1,146 assertions across 14 test files pass with `0 failures | 0 warnings | 0 skips`
 * Source tarball: `specshiny_0.5.0.tar.gz` (256.7 KB / 0.251 MB)
 
+## Release summary (0.5.2)
+
+* Fixed Windows dangling-symlink detection when `file.exists()` returns `TRUE` in `R/bundle.R`, and switched `run_spec_preview_sim()` wall-clock budgeting to high-resolution `Sys.time()` / `difftime()` for Windows clock granularity.
+
 ## Release summary (0.5.1)
 
 * Fixed Windows cross-platform path canonicalization (8.3 short-path expansion and case-insensitive drive/path comparison) and portable symlink/junction detection in `R/bundle.R` (`validate_bundle_dir()`, `export_spec_bundle()`, `verify_spec_bundle()`), plus isolated cross-platform symlink tests in `tests/testthat/test-peer-redteam.R`.

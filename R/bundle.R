@@ -83,7 +83,7 @@ export_spec_bundle <- function(spec,
 
   pkg_ver <- tryCatch(
     as.character(utils::packageVersion("specshiny")),
-    error = function(e) "0.5.1"
+    error = function(e) "0.5.2"
   )
 
   manifest <- list(
@@ -305,13 +305,28 @@ is_symlink_path <- function(path) {
     }
   }
 
-  # 3. Windows dangling symlink check: broken link appears in directory listing even if file.exists() is FALSE
-  if (identical(.Platform$OS.type, "windows") && !file.exists(trimmed) && !dir.exists(trimmed)) {
+  # 3. Windows dangling symlink check:
+  # On Windows, a broken symlink either (a) appears in list.files() while file.exists() is FALSE,
+  # OR (b) makes file.exists() return TRUE while normalizePath() falls back unchanged and
+  # opening the target for reading fails because the target does not exist.
+  if (identical(.Platform$OS.type, "windows") && !dir.exists(trimmed)) {
     parent_raw <- dirname(trimmed)
     leaf_nm <- basename(trimmed)
-    if (!identical(parent_raw, trimmed) && dir.exists(parent_raw) && nzchar(leaf_nm)) {
-      entries <- tryCatch(list.files(parent_raw, all.files = TRUE, no.. = TRUE), error = function(e) character())
-      if (tolower(leaf_nm) %in% tolower(entries)) {
+    in_dir_listing <- !identical(parent_raw, trimmed) && dir.exists(parent_raw) && nzchar(leaf_nm) &&
+      (tolower(leaf_nm) %in% tolower(tryCatch(list.files(parent_raw, all.files = TRUE, no.. = TRUE), error = function(e) character())))
+    if (in_dir_listing) {
+      if (!file.exists(trimmed)) {
+        return(TRUE)
+      }
+      can_open <- suppressWarnings(tryCatch(
+        {
+          con <- file(trimmed, open = "rb")
+          close(con)
+          TRUE
+        },
+        error = function(e) FALSE
+      ))
+      if (!isTRUE(can_open)) {
         return(TRUE)
       }
     }

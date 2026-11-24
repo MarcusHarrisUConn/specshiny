@@ -600,11 +600,12 @@ run_spec_preview_sim <- function(spec,
     })
   }
 
-  t0 <- proc.time()[["elapsed"]]
+  t0 <- Sys.time()
   reps <- list()
   for (i in seq_len(n_reps)) {
     reps[[i]] <- run_one()
-    if (i < n_reps && (proc.time()[["elapsed"]] - t0) > as.numeric(max_seconds)) {
+    elapsed_sec <- as.numeric(difftime(Sys.time(), t0, units = "secs"))
+    if (i < n_reps && elapsed_sec >= as.numeric(max_seconds)) {
       warns <- c(
         warns,
         sprintf("Preview stopped early at %d/%d replications after exceeding the %.1fs interactive time budget.", i, n_reps, as.numeric(max_seconds))

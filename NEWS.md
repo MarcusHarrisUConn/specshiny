@@ -1,3 +1,7 @@
+# specshiny 0.5.2
+
+* Fixed two Windows-specific edge cases: detected dangling Windows symlinks where `file.exists()` returns `TRUE` (failing closed with `specshiny_security_error` before the overwrite check in `export_spec_bundle()`), and switched `run_spec_preview_sim()` wall-clock budgeting to high-resolution `Sys.time()` / `difftime()` so sub-15ms time caps trigger reliably on Windows.
+
 # specshiny 0.5.1
 
 ## Cross-Platform Windows Path & Symlink Fixes

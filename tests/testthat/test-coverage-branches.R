@@ -125,7 +125,7 @@ test_that("run_spec_preview_sim and mod_spec_preview_server cover all families, 
     missingness = list(mechanism = "MCAR", rate = 0.10),
     simulation = list(n_reps = 50L, seed = 102L, parameter_grid = list(n_obs = c(500, 1000)))
   )
-  p_skew <- specshiny:::run_spec_preview_sim(s_skew, max_reps = 5L, max_n = 400L, max_seconds = 1e-6)
+  p_skew <- specshiny:::run_spec_preview_sim(s_skew, max_reps = 20L, max_n = 400L, max_seconds = 1e-9)
   expect_true(any(grepl("scaled down", p_skew$warnings)))
   expect_true(any(grepl("parameter grid", p_skew$warnings)))
   expect_true(any(grepl("stopped early", p_skew$warnings)))
